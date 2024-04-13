@@ -5,16 +5,15 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 project(Server)
 
 set(EXE_NAME "server")
+
+include_directories(${CMAKE_SOURCE_DIR}/dep/include)
+
 add_executable(${EXE_NAME})
+target_compile_definitions(${EXE_NAME} PRIVATE _CRT_SECURE_NO_WARNINGS)
 
-#include_directories("${CMAKE_SOURCE_DIR}/dependencies/include")
-#target_compile_definitions(${GAME_NAME} PRIVATE GLEW_STATIC)
-
-if (CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+if (CMAKE_C_COMPILER_ID MATCHES "Clang")
     target_compile_options(
         ${EXE_NAME} PRIVATE
-        -O1
-
         -pedantic -Wall -Wextra -Werror
 
         -Wno-unused-parameter -Wno-unused-variable -Wno-unused-function
@@ -27,8 +26,3 @@ target_compile_features(${EXE_NAME} PUBLIC c_std_99)
 
 file(GLOB_RECURSE EXE_SOURCES "src/*.c")
 target_sources(${EXE_NAME} PRIVATE ${EXE_SOURCES})
-
-#target_link_libraries(${GAME_NAME} "${CMAKE_SOURCE_DIR}/dependencies/libs/GLFW/glfw3.lib")
-#target_link_libraries(${GAME_NAME} "${CMAKE_SOURCE_DIR}/dependencies/libs/GLEW/glew32s.lib")
-
-#target_link_libraries(${GAME_NAME} opengl32.dll gdi32.dll user32.dll kernel32.dll)
