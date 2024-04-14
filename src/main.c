@@ -27,7 +27,7 @@ int const not_found_c = STR_SIZE(not_found_msg);
 static char const not_impl_msg[] = "HTTP/1.1 501 Not Implemented\r\n\r\n";
 int const not_impl_c = STR_SIZE(not_impl_msg);
 
-static char client_request[2048] = "";
+static uint8_t client_request[2048] = "";
 static char tmp[2048];
 static char *page_msg;
 static int page_c;
@@ -95,7 +95,7 @@ static void handle_server_socket(void) {
         int const key2_len = STR_SIZE(key2);
         int key1_len = 60 - key2_len;
 
-        if(pos - client_request + key_header_c + 2 + key1_len > received) {
+        if(pos - (char*)client_request + key_header_c + 2 + key1_len > received) {
             printf("Incorrect size\n");
             goto error;
         }
@@ -152,11 +152,6 @@ static void handle_server_socket(void) {
         int size = send(conn_socket, msg, msg_c, 0);
         websockets_sockets[websockets_c++] = conn_socket;
         printf("Sent %d of %d\n", size, msg_c);
-
-        //response[0] = (uint8_t)((1 << 7) | 9);
-        //response[1] = 0;
-        //size = send(conn_socket, response, 2, 0);
-        //printf("Sent binary stuff! %d\n", size);
 
         return;
     }
@@ -271,8 +266,7 @@ int main(void) {
         for(int i = 0; i < websockets_c; i++) {
             SOCKET *s = &websockets_sockets[i];
             if(FD_ISSET(*s, &read_fs)) {
-                printf("Websocket received something! Finally!!\n");
-                printf("Nobody knows why, but the connection is no longer (pending)\n");
+                printf("Websocket received something!\n");
 
                 int received = recv(*s, client_request, 2047, 0);
                 if(received < 0) {
@@ -280,13 +274,57 @@ int main(void) {
                     return 32;
                 }
 
+                if(received < 1 || client_request[0] != 0x81) {
+                    // 8 for no continuation, 1 for text
+                    printf("first byte %x is not 0x81\n", client_request[0]);
+                    return 52;
+                }
+                if(received < 2 || (client_request[1] & 0x80) == 0) {
+                    printf("Message not masked\n");
+                    return 52;
+                }
+                int len = client_request[1] & 0x7fu;
+                if(len > 125) {
+                    printf("Unsupported length %d\n", len);
+                    return 52;
+                }
+                if(received < 6) {
+                    printf("Mask where\n");
+                    return 52;
+                }
+#define M(index) client_request[index]
+                uint8_t mask[4] = { M(2), M(3), M(4), M(5) };
+#undef M
+                if(received < 6 + len) {
+                    printf("Message len is smaller than currently available\n");
+                    return 52;
+                }
+                if(received > 2048) {
+                    printf("Message too big\n");
+                    return 52;
+                }
+                uint8_t *client_msg = client_request + 6;
+                for(int i = 0; i < len; i++) {
+                    tmp[i] = client_msg[i] ^ mask[i % 4];
+                }
+
+                printf("Message: %.*s\n", len, tmp);
+
                 printf("Request: `");
                 for(int i = 0; i < received; i++) {
-                    printf("0x%x", client_request[i]);
+                    printf("\\%.2x", (uint8_t)client_request[i]);
                 }
-                printf("`");
+                printf("`\n");
 
-                return 52;
+                static char const msg[] = "Hello Client!";
+                int const msg_c = STR_SIZE(msg);
+
+                uint8_t *response = (uint8_t*)tmp;
+                response[0] = (uint8_t)((1 << 7) | 1);
+                response[1] = 13;
+                memcpy(response + 2, msg, 2 + msg_c);
+                int size = send(*s, (char*)response, 2 + msg_c, 0);
+                printf("Sent %d: `%.*s`\n", size, msg_c, msg);
             }
         }
     }
