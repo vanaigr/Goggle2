@@ -11,16 +11,16 @@ include_directories(${CMAKE_SOURCE_DIR}/dep)
 add_executable(${EXE_NAME})
 target_compile_definitions(${EXE_NAME} PRIVATE _CRT_SECURE_NO_WARNINGS)
 
+set(CMAKE_C_FLAGS_DEBUG "-O1")
+
 if (CMAKE_C_COMPILER_ID MATCHES "Clang")
-    target_compile_options(
-        ${EXE_NAME} PRIVATE
-        #-pedantic -Wall -Wextra -Werror
+    #-pedantic -Wall -Wextra -Werror
 
-        -Wno-unused-parameter -Wno-unused-variable -Wno-unused-function
-        -Wno-unused-but-set-variable -Wno-unused-label -Wno-unused-private-field
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wno-unused-parameter -Wno-unused-variable")
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wno-unused-function -Wno-unused-but-set-variable")
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wno-unused-label -Wno-unused-private-field")
 
-        -fansi-escape-codes -fdiagnostics-color=always
-    )
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fansi-escape-codes -fdiagnostics-color=always")
 endif()
 target_compile_features(${EXE_NAME} PUBLIC c_std_99)
 
