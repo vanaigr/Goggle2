@@ -1,0 +1,45 @@
+
+curl "https://www.google.com/search?q=bob&asearch=arc&async=use_ac:true,_fmt:prog" ^
+  -H "accept: */*" ^
+  -H "user-agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
+
+curl "http://127.0.0.1/search?q=bob&asearch=arc&async=use_ac:true,_fmt:prog" ^
+  -H "accept: */*" ^
+  -H "user-agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
+
+
+
+
+
+GET /search?q=bob&asearch=arc&async=use_ac:true,_fmt:prog HTTP/1.1
+Host: 127.0.0.1
+accept: */*
+user-agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36
+
+
+GET /search?q=bob&asearch=arc&async=use_ac:true,_fmt:prog HTTP/1.1
+Host: 127.0.0.1
+accept: */*
+user-agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36
+
+
+curl "https://www.google.com/search?vet=12ahUKEwjxrIzomMiFAxXzGtAFHd9eDD0QxK8CegQICRAC..i&ved=2ahUKEwjxrIzomMiFAxXzGtAFHd9eDD0Q_skCegQICRAG&bl=MApF&s=web&opi=89978449&sca_esv=ce68b03d4bb9be5f&yv=3&q=bob&newwindow=1&gbv=2&sxsrf=ACQVn0-Gj4ECznolgMVtFDa04K9iHQWxSA:1713320654745&ei=zjIfZvGNLfO1wN4P372x6AM&start=10&sa=N&sstk=Ad9T53xEPAfMKeZXdCLy7ZthK5o9rV5fJJT2lcwnTFYGdiy6VE3mRHOQsajRS0hy3m30OaXbIKV-7f1vBFyxVVkK4CmReUpG84qTWQ&asearch=arc&cs=1&async=arc_id:srp_110,ffilt:all,ve_name:MoreResultsContainer,use_ac:false,inf:1,_id:arc-srp_110,_pms:s,_fmt:pc" ^
+  -H "accept: */*" ^
+  -H "accept-language: en-US,en;q=0.9,ru-RU;q=0.8,ru;q=0.7" ^
+  -H "referer: https://www.google.com/" ^
+  -H ^"sec-ch-ua: ^\^"Google Chrome^\^";v=^\^"123^\^", ^\^"Not:A-Brand^\^";v=^\^"8^\^", ^\^"Chromium^\^";v=^\^"123^\^"^" ^
+  -H ^"sec-ch-ua-arch: ^\^"x86^\^"^" ^
+  -H ^"sec-ch-ua-bitness: ^\^"64^\^"^" ^
+  -H ^"sec-ch-ua-full-version: ^\^"123.0.6312.123^\^"^" ^
+  -H ^"sec-ch-ua-full-version-list: ^\^"Google Chrome^\^";v=^\^"123.0.6312.123^\^", ^\^"Not:A-Brand^\^";v=^\^"8.0.0.0^\^", ^\^"Chromium^\^";v=^\^"123.0.6312.123^\^"^" ^
+  -H "sec-ch-ua-mobile: ?0" ^
+  -H ^"sec-ch-ua-model: ^\^"^\^"^" ^
+  -H ^"sec-ch-ua-platform: ^\^"Windows^\^"^" ^
+  -H ^"sec-ch-ua-platform-version: ^\^"10.0.0^\^"^" ^
+  -H "sec-ch-ua-wow64: ?0" ^
+  -H "sec-fetch-dest: empty" ^
+  -H "sec-fetch-mode: cors" ^
+  -H "sec-fetch-site: same-origin" ^
+  -H "user-agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36" ^
+  -H "x-client-data: CJO2yQEIpbbJAQipncoBCOHeygEIlaHLAQiFoM0BCN3szQEI9InOAQiG1cwiGLOpygEY9snNARiY9c0BGNP+zQEY2IbOARjrjaUX" ^
+  -H "x-dos-behavior: Embed"

@@ -5,30 +5,31 @@
 #include<stdint.h>
 #include<stdbool.h>
 
-//#include<windows.h>
-//#include<wininet.h>
-#include<winsock2.h>
+#include<windows.h>
+#include<winhttp.h>
+//#include<winsock2.h>
 
 #include<sha1/sha1.h>
 
-//#pragma comment(lib, "wininet.lib")
+#pragma comment(lib, "winhttp.lib")
 #pragma comment(lib, "ws2_32.lib")
 
 #define ARR_SIZE(arr) (sizeof((arr)) / sizeof((arr)[0]))
-#define STR_SIZE(str) (ARR_SIZE(str) - 1)
+#define STR_SIZE(str) (sizeof((str)) - 1)
 
 static const char page_header_msg[]
     = "HTTP/1.1 200 OK\r\n"
     "Content-type: text/html\r\n"
-    "\r\n";
+    "\r\n<!DOCTYPE html><html><head></head>";
 int const page_header_c = STR_SIZE(page_header_msg);
 static char const not_found_msg[] = "HTTP/1.1 404 Not Found\r\n\r\n";
 int const not_found_c = STR_SIZE(not_found_msg);
 static char const not_impl_msg[] = "HTTP/1.1 501 Not Implemented\r\n\r\n";
 int const not_impl_c = STR_SIZE(not_impl_msg);
 
-static uint8_t client_request[2048] = "";
-static char tmp[2048];
+static char const get[] = "GET";
+static char const search[] = "/search?q=";
+
 static char *page_msg;
 static int page_c;
 
@@ -36,7 +37,30 @@ static SOCKET server_socket;
 static SOCKET websockets_sockets[64];
 static int websockets_c = 0;
 
+static HINTERNET winhttp_state = NULL;
+
+static char const head_cmp[] = "<head>";
+static int const head_cmp_c = STR_SIZE(head_cmp);
+static char const end_head_cmp[] = "</head>";
+static int const end_head_cmp_c = STR_SIZE(end_head_cmp);
+
+static uint8_t client_request[2048] = "";
+static char tmp[2048];
+static int const page_tmp_size = 1024 * 1024;
+static char page_tmp[page_tmp_size];
+
+typedef unsigned short wchar;
+
+#define MIN(a, b) ((a) < (b) ? (a) : (b))
+static bool match_str(char const *str, char const *match, int maxlen) {
+    for(int i = 0; i < maxlen; i++) {
+        if(str[i] != match[i]) return false;
+    }
+    return true;
+}
+
 static void handle_server_socket(void) {
+#if 0
     SOCKET conn_socket = accept(server_socket, NULL, NULL);
     if (conn_socket == INVALID_SOCKET) {
         printf("Accept failed with error code : %d", WSAGetLastError());
@@ -51,22 +75,111 @@ static void handle_server_socket(void) {
     printf("Received %d bytes: `%.*s`\n", received, received, client_request);
     client_request[received] = '\0';
 
-    static char const get[] = "GET";
-    static char const search[] = "/search?q=";
 
-    char const *msg;
-    int msg_c;
     if(received < 3 || memcmp(client_request, get, 3) != 0) {
         printf("Response not Implemented\n");
-        msg = not_impl_msg;
-        msg_c = not_impl_c;
+        char *msg = not_impl_msg;
+        int msg_c = not_impl_c;
+
+        int sent = send(conn_socket, msg, msg_c, 0);
+        printf("Sent %d of %d\n", sent, msg_c);
     }
     else if(received >= 14 && memcmp(client_request + 4, search, 10) == 0) {
-        printf("Returning main page\n");
-        msg = page_msg;
-        msg_c = page_c;
-        int size = send(conn_socket, msg, msg_c, 0);
-        printf("Sent %d of %d\n", size, msg_c);
+        printf("Returning search page\n");
+        static char const object[] = "/search?q=";
+        int object_c = STR_SIZE(object);
+
+        //int sent = send(conn_socket, page_header_msg, page_header_c, 0);
+        //assert(sent == page_header_c);
+        strcpy(client_request, "boba ");
+
+        memcpy(tmp, object, object_c);
+        int search_c = 0;
+        while(true) {
+            uint8_t const v = client_request[search_c];
+            if(v == ' ' || v == '\0' || v == '\r') {
+                break;
+            }
+            assert(object_c + search_c < 2048);
+            tmp[object_c + search_c] = v;
+            search_c++;
+        }
+        // https://github.com/searxng/searxng/issues/159
+        // https://google.com/search?q=bob&asearch=arc&async=use_ac:true,_fmt:prog
+        static char const extra[] = "&asearch=arc&async=use_ac:true,_fmt:prog";
+        int const extra_c = STR_SIZE(extra);
+        memcpy(tmp + object_c + search_c, extra, extra_c + 1); // with \0
+        printf("URL: %s\n", tmp);
+
+        static char const hdrs[]
+            =
+            "accept: */*\r\n"
+         ;
+
+        HINTERNET ggl_conn = InternetConnectA(
+            winhttp_state, "www.google.com", INTERNET_DEFAULT_HTTPS_PORT,
+            NULL, NULL, INTERNET_SERVICE_HTTP, 0, 0
+        );
+        if (!ggl_conn) {
+            printf("Failed to connect: %lu\n", GetLastError());
+            goto error;
+        }
+
+        static char const *accept[] = {
+            "*/*", NULL
+            //"text/html", "application/xhtml+xml", "application/xml;q=0.9", NULL
+        };
+
+        HINTERNET ggl_request = HttpOpenRequestA(
+            ggl_conn, "GET", tmp, "HTTP/1.1",
+            NULL, NULL, INTERNET_FLAG_SECURE, 0
+        );
+        if(!ggl_request) {
+            printf("Failed to create(?) request %lu\n", GetLastError()) ;
+            goto error;
+        }
+
+        bool ggl_sent = HttpSendRequestA(ggl_request, hdrs, STR_SIZE(hdrs), NULL, 0);
+        if(!ggl_sent) {
+            printf("Failed to send request %lu\n", GetLastError()) ;
+            goto error;
+        }
+
+        static char const response_path[] = "./responses/page-";
+        int const response_path_c = STR_SIZE(response_path);
+        memcpy(tmp, response_path, response_path_c);
+        static int page_i = 0;
+        int extra_path_c = sprintf(tmp + response_path_c, "%d.txt", page_i);
+        tmp[response_path_c + extra_path_c] = '\0';
+        page_i++;
+
+        FILE *file = fopen(tmp, "wb");
+
+        DWORD bytesReadL;
+        char *decode_end = page_tmp;
+        char *page_end = page_tmp;
+        int skip = STR_SIZE("<!doctype html><html lang=\"en\"><head>");
+        int state = 0; // 0 - head, 1 - body
+        while (InternetReadFile(ggl_request, page_end, page_tmp + page_tmp_size - page_end, &bytesReadL) && bytesReadL > 0) {
+            int bytesRead = (int)bytesReadL;
+            page_end += bytesRead;
+
+            printf("Received %d bytes\n", bytesRead);
+
+            while(!fwrite(decode_end, page_end - decode_end, 1, file));
+            decode_end = page_end;
+        }
+        printf("Message sent %lu\n", bytesReadL);
+        fclose(file);
+
+        InternetCloseHandle(ggl_request);
+        InternetCloseHandle(ggl_conn);
+
+        //printf("Returning main page\n");
+        //msg = page_msg;
+        //msg_c = page_c;
+        //int size = send(conn_socket, msg, msg_c, 0);
+        //printf("Sent %d of %d\n", size, msg_c);
     }
     else if(received < 14 || client_request[4] == '/' && client_request[5] == ' ') {
         printf("Websockets? Surely...\n");
@@ -74,10 +187,7 @@ static void handle_server_socket(void) {
             = "HTTP/1.1 101 Switching Protocols\r\n"
             "Connection: Upgrade\r\nUpgrade: websocket\r\n"
             "Sec-WebSocket-Accept: ";
-        //static char const header_msg2[]
-        //    = "\r\nSec-WebSocket-Protocol: chat\r\n\r\n";
         int const header_msg_c = STR_SIZE(header_msg);
-        //int const header_msg2_c = STR_SIZE(header_msg2);
 
         static char const b64lookup[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
@@ -142,10 +252,9 @@ static void handle_server_socket(void) {
 
         memcpy(response, header_msg, header_msg_c);
         memcpy(accept, "\r\n\r\n", 4);
-        //memcpy(accept, header_msg2, header_msg2_c);
 
-        msg = response;
-        msg_c = accept - response + 4;// + header_msg2_c;
+        char *msg = response;
+        int msg_c = accept - response + 4;
 
         printf("Responding with %d bytes: `%.*s`\n", msg_c, msg_c, msg);
 
@@ -161,6 +270,7 @@ static void handle_server_socket(void) {
 
 error:
     closesocket(conn_socket);
+#endif
 }
 
 static int setup_page(void) {
@@ -193,12 +303,24 @@ static int setup_page(void) {
     return 0;
 }
 
-int main(void) {
+int main(int argc, char **argv) {
+    //bool it = argv[1][0] == 'b';
+    bool it = true;
     WSADATA wsa;
 
     printf("\nInitialising Winsock...");
     if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
         printf("Failed. Error Code: %d", WSAGetLastError());
+        return 1;
+    }
+
+    winhttp_state = WinHttpOpen(
+        L"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+        WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
+        WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0
+    );
+    if(!winhttp_state) {
+        printf("Failed to init winhttp %d\n", GetLastError());
         return 1;
     }
 
@@ -213,15 +335,15 @@ int main(void) {
     struct sockaddr_in server = (struct sockaddr_in){
         .sin_family = AF_INET,
         .sin_addr = { .s_addr = INADDR_ANY },
-        .sin_port = htons(1619),
+        .sin_port = htons(80),
     };
 
-    if (bind(server_socket, (struct sockaddr *)&server, sizeof(server)) == SOCKET_ERROR) {
+    if(!it) if (bind(server_socket, (struct sockaddr *)&server, sizeof(server)) == SOCKET_ERROR) {
         printf("Bind failed with error code: %d", WSAGetLastError());
         return 1;
     }
 
-    if(setup_page()) {
+    if(!it) if(setup_page()) {
         printf("No page!\n");
         return 1;
     }
@@ -230,6 +352,117 @@ int main(void) {
 
     fd_set read_fs;
     fd_set error_fs;
+
+
+    if(it) {
+        static wchar const object[] = L"search?q=bob&asearch=arc"
+            "&async=use_ac:true,_fmt:prog&filter=0&start=0&num=30"
+            ;
+        int object_c = STR_SIZE(object);
+
+        static wchar const hdrs[] = L"accept: */*\r\n"
+         ;
+
+        HINTERNET ggl_conn = WinHttpConnect(
+            winhttp_state, L"www.google.com", INTERNET_DEFAULT_HTTPS_PORT, 0
+        );
+        if (!ggl_conn) {
+            printf("Failed to connect: %lu\n", GetLastError());
+            return 1;
+        }
+
+        static wchar const *accept[] = {
+            L"*/*", NULL
+            //"text/html", "application/xhtml+xml", "application/xml;q=0.9", NULL
+        };
+
+        HINTERNET ggl_request = WinHttpOpenRequest(
+            ggl_conn, NULL, object, NULL, L"https://www.google.com/", accept,
+            WINHTTP_FLAG_SECURE | WINHTTP_FLAG_REFRESH
+        );
+        if(!ggl_request) {
+            printf("Failed to create(?) request %lu\n", GetLastError()) ;
+            return 1;
+        }
+
+        bool ggl_sent = WinHttpSendRequest(
+            ggl_request, hdrs, ARR_SIZE(hdrs) - 1,
+            WINHTTP_NO_REQUEST_DATA, 0, 0, 0
+        );
+        if(!ggl_sent) {
+            printf("Failed to send request %lu\n", GetLastError()) ;
+            return 1;
+        }
+
+        bool ggl_recv = WinHttpReceiveResponse(ggl_request, NULL);
+        if(!ggl_recv) {
+            printf("Failed to receive request %lu\n", GetLastError()) ;
+            return 1;
+        }
+
+        DWORD headers_size = page_tmp_size;
+        if (!WinHttpQueryHeaders(
+            ggl_request,
+            WINHTTP_QUERY_RAW_HEADERS_CRLF,
+            WINHTTP_HEADER_NAME_BY_INDEX,
+            page_tmp, &headers_size,
+            WINHTTP_NO_HEADER_INDEX
+        )) {
+            printf("Headers? %ld\n", GetLastError());
+            return 1;
+        }
+
+        wprintf(L"Headers: `%.*s`\n", (int)headers_size, page_tmp);
+
+        static char const response_path[] = "./responses/page-";
+        int const response_path_c = STR_SIZE(response_path);
+        memcpy(tmp, response_path, response_path_c);
+        static int page_i = 0;
+        int extra_path_c = sprintf(tmp + response_path_c, "%d.txt", page_i);
+        tmp[response_path_c + extra_path_c] = '\0';
+        page_i++;
+
+        FILE *file = fopen(tmp, "wb");
+
+        char *page_end = page_tmp;
+        char *const buffer_end = page_tmp + page_tmp_size;
+
+        DWORD dwSize;
+        DWORD dwDownloaded = 0;
+        LPSTR pszOutBuffer;
+        BOOL  bResults = FALSE;
+
+        while(true) {
+            printf("Start!\n");
+            dwSize = 0;
+            if (!WinHttpQueryDataAvailable(ggl_request, &dwSize)) {
+                printf("Some stupid error #1 %ld\n", GetLastError());
+                return 1;
+            }
+            if(dwSize == 0) break;
+
+            dwDownloaded = 0;
+            int left = buffer_end - page_end;
+            if(!WinHttpReadData(
+                ggl_request, page_end,
+                left, &dwDownloaded
+            )) {
+                printf("Some stupid error #2 %ld\n", GetLastError());
+                return 1;
+            }
+            if(left == dwDownloaded) printf("Oui %d\n", left);
+            if(dwDownloaded == 0) break;
+
+            printf("Received %d bytes\n", (int)dwDownloaded);
+
+            while(!fwrite(page_end, dwDownloaded, 1, file)) printf("?");
+        }
+
+        printf("Message sent %d\n", (int)(page_end - page_tmp));
+        fclose(file);
+
+        return 0;
+    }
 
     while(true) {
         printf("\nWaiting for incoming connections...\n");
@@ -336,37 +569,5 @@ int main(void) {
 }
 
 #if 0
-    HINTERNET hInternet = NULL;
-    HINTERNET hConnect = NULL;
-    HINTERNET hRequest = NULL;
-
-    // Initialize WinINet
-    hInternet = InternetOpenA("HTTP GET", INTERNET_OPEN_TYPE_DIRECT, NULL, NULL, 0);
-    if (!hInternet) {
-        printf("Failed to initialize WinINet: %lu\n", GetLastError());
-        return 1;
-    }
-
-    // Connect to the server
-    hConnect = InternetOpenUrlA(hInternet, "https://google.com/search?q=bob", NULL, 0, INTERNET_FLAG_SECURE, 0);
-    if (!hConnect) {
-        printf("Failed to connect: %lu\n", GetLastError());
-        InternetCloseHandle(hInternet);
-        return 1;
-    }
-
-    // Send the GET request
-    char buffer[4096];
-    DWORD bytesRead;
-    while (InternetReadFile(hConnect, buffer, sizeof(buffer), &bytesRead) && bytesRead > 0) {
-        // Output received data
-        fwrite(buffer, 1, bytesRead, stdout);
-    }
-
-    // Cleanup
-    InternetCloseHandle(hConnect);
-    InternetCloseHandle(hInternet);
-
-    return 0;
 }
 #endif
