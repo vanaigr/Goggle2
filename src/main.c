@@ -45,7 +45,7 @@ static char const end_head_cmp[] = "</head>";
 static int const end_head_cmp_c = STR_SIZE(end_head_cmp);
 
 enum {
-    tag_stack_size = 2048,
+    tag_stack_size = 256,
     result_tmp_size = 65536,
     page_tmp_size = 1024 * 1024,
 };
@@ -63,6 +63,16 @@ static int get_diff(char const *b1, char const *b2, int len) {
         if(b1[i] != b2[i]) return i;
     }
     return len;
+}
+
+static uint32_t make_tag_name(char *str) __attribute__((const));
+static uint32_t make_tag_name(char *str) {
+    uint32_t name = 0;
+    while(*str) {
+        name = (name << 8) | (uint8_t)(*str);
+        str++;
+    }
+    return name;
 }
 
 static void handle_server_socket(void) {
@@ -429,6 +439,9 @@ int main(int argc, char **argv) {
 #endif
 
         char *result_end = result_tmp;
+        char *ans_name_start = NULL;
+        char *desc_start = NULL;
+        int desc_level = 0;
 
         char *decode_end = page_tmp;
         char *recv_end = page_tmp;
@@ -436,6 +449,13 @@ int main(int argc, char **argv) {
 
         static char const match_str[] = "<div jscontroller=\"SC7lYd\"";
         int match_size = STR_SIZE(match_str);
+
+        static char const href_str[] = "href=\"";
+        int href_size = STR_SIZE(href_str);
+
+        static char const desc_classes_str[]
+            = "class=\"VwiC3b yXK7lf lVm3ye r025kc hJNv6b Hdw6tb\"";
+        int desc_classes_str_size = STR_SIZE(desc_classes_str);
 
         int tag_end = 0;
         enum {
@@ -489,10 +509,10 @@ int main(int argc, char **argv) {
                     if(recv_end - decode_end < 1) goto end;
                     if(*decode_end == '>') {
                         tag_end = 0;
-                        tag_stack[tag_end++] = ('d' << 16) | ('i' << 8) | ('v');
+                        tag_stack[tag_end++] = make_tag_name("div");
                         decode_state = PARSE_ANSWER;
                         printf("Found end\n");
-                        printf("<div>\n");
+                        //printf("<div>\n");
                     }
                     decode_end++;
                     goto next;
@@ -518,7 +538,7 @@ int main(int argc, char **argv) {
                         while(true) {
                             if(recv_end - parse_end < 1) goto end;
                             char s = *parse_end;
-                            if(s >= 'a' && s <= 'z') { // good enough
+                            if((s >= 'a' && s <= 'z') || (s >= '0' && s <= '9')) {
                                 name = (name << 8) | (uint8_t)s;
                             } else {
                                 break;
@@ -527,33 +547,111 @@ int main(int argc, char **argv) {
                         }
                         int name_size = parse_end - name_start;
 
-                        while(true) {
-                            if(recv_end - parse_end < 1) goto end;
-                            if(*parse_end == '>') break;
-                            parse_end++;
+                        bool description = false;
+                        if(!closing && name == make_tag_name("div")) {
+                            char *desc_parse_end = parse_end;
+
+                            while(true) {
+                                if(recv_end - desc_parse_end < desc_classes_str_size) {
+                                    goto end;
+                                }
+                                if(*desc_parse_end == '>') goto not_desc;
+                                int diff = get_diff(
+                                    desc_parse_end, desc_classes_str,
+                                    desc_classes_str_size
+                                );
+                                desc_parse_end += MAX(diff, 1);
+                                if(diff == desc_classes_str_size) break;
+                            }
+
+                            description = true;
+                            parse_end = desc_parse_end;
+                            not_desc:;
+                        }
+                        else if(!closing && name == 'a') {
+                            char *a_parse_end = parse_end;
+                            while(true) {
+                                if(recv_end - a_parse_end < href_size) goto end;
+                                if(*a_parse_end == '>') goto not_a;
+                                int diff = get_diff(a_parse_end, href_str, href_size);
+                                a_parse_end += MAX(diff, 1);
+                                if(diff == href_size) break;
+                            }
+
+                            char *href_begin = a_parse_end;
+                            while(true) {
+                                if(recv_end - a_parse_end < 1) goto end;
+                                if(*a_parse_end == '>') goto not_a;
+                                if(*a_parse_end == '"') break;
+                                a_parse_end++;
+                            }
+                            char *href_end = a_parse_end;
+                            a_parse_end++;
+                            parse_end = a_parse_end;
+
+                            printf("URL: %.*s\n", (int)(href_end - href_begin), href_begin);
+                            not_a:;
                         }
 
-                        if(closing) {
+                        while(true) {
+                            if(recv_end - parse_end < 1) goto end;
+                            bool match = *parse_end == '>';
+                            parse_end++;
+                            if(match) break;
+                        }
+
+                        if(description) {
+                            desc_start = parse_end;
+                            desc_level = tag_end;
+                        }
+
+                        if(!closing && name == make_tag_name("h3")) {
+                            ans_name_start = parse_end;
+                        } else if(closing && name == make_tag_name("h3")) {
+                            printf(
+                                "Name: %.*s\n",
+                                (int)(decode_end - ans_name_start),
+                                ans_name_start
+                            );
+                            ans_name_start = NULL;
+                        }
+
+                        if(name == make_tag_name("br")) {
+                            //for(int i = 0; i < tag_end; i++) {
+                            //    printf("  ");
+                            //}
+                            //printf("<%.*s>\n", name_size, name_start);
+                        }
+                        else if(closing) {
                             while(tag_end > 0) {
                                 tag_end--;
                                 if (tag_stack[tag_end] == name) {
-                                    for(int i = 0; i < tag_end; i++) {
-                                        printf("  ");
-                                    }
-                                    printf("</%.*s>\n", name_size, name_start);
+                                    //for(int i = 0; i < tag_end; i++) {
+                                    //    printf("  ");
+                                    //}
+                                    //printf("</%.*s>\n", name_size, name_start);
                                     break;
                                 }
                             }
+                            if(desc_start && desc_level >= tag_end) {
+                                printf(
+                                    "Desc: %.*s\n",
+                                    (int)(decode_end - desc_start),
+                                    desc_start
+                                );
+                                desc_start = NULL;
+                            }
+
                             if(tag_end == 0) {
                                 decode_state = SEARCH_NEXT;
                                 printf("Answer ended\n");
                             }
                         }
                         else {
-                            for(int i = 0; i < tag_end; i++) {
-                                printf("  ");
-                            }
-                            printf("<%.*s>\n", name_size, name_start);
+                            //for(int i = 0; i < tag_end; i++) {
+                            //    printf("  ");
+                            //}
+                            //printf("<%.*s>\n", name_size, name_start);
                             tag_stack[tag_end++] = name;
                         }
                     }
