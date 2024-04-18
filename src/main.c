@@ -44,19 +44,25 @@ static int const head_cmp_c = STR_SIZE(head_cmp);
 static char const end_head_cmp[] = "</head>";
 static int const end_head_cmp_c = STR_SIZE(end_head_cmp);
 
+enum {
+    tag_stack_size = 2048,
+    result_tmp_size = 65536,
+    page_tmp_size = 1024 * 1024,
+};
 static uint8_t client_request[2048] = "";
-static char tmp[2048];
-static int const page_tmp_size = 1024 * 1024;
+static char result_tmp[result_tmp_size];
 static char page_tmp[page_tmp_size];
+static uint32_t tag_stack[tag_stack_size];
 
 typedef unsigned short wchar;
 
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
-static bool match_str(char const *str, char const *match, int maxlen) {
-    for(int i = 0; i < maxlen; i++) {
-        if(str[i] != match[i]) return false;
+#define MAX(a, b) ((a) > (b) ? (a) : (b))
+static int get_diff(char const *b1, char const *b2, int len) {
+    for(int i = 0; i < len; i++) {
+        if(b1[i] != b2[i]) return i;
     }
-    return true;
+    return len;
 }
 
 static void handle_server_socket(void) {
@@ -105,7 +111,9 @@ static void handle_server_socket(void) {
             search_c++;
         }
         // https://github.com/searxng/searxng/issues/159
-        // https://google.com/search?q=bob&asearch=arc&async=use_ac:true,_fmt:prog
+        // Note: to filter out useful results, use <div jscontroller="SC7lYd"
+        // (this if from SearXNG engines/google.py results_xpath)
+        // Example: https://google.com/search?q=abc&asearch=arc&async=use_ac:true,_fmt:prog
         static char const extra[] = "&asearch=arc&async=use_ac:true,_fmt:prog";
         int const extra_c = STR_SIZE(extra);
         memcpy(tmp + object_c + search_c, extra, extra_c + 1); // with \0
@@ -320,7 +328,7 @@ int main(int argc, char **argv) {
         WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0
     );
     if(!winhttp_state) {
-        printf("Failed to init winhttp %d\n", GetLastError());
+        printf("Failed to init winhttp %ld\n", GetLastError());
         return 1;
     }
 
@@ -355,8 +363,8 @@ int main(int argc, char **argv) {
 
 
     if(it) {
-        static wchar const object[] = L"search?q=bob&asearch=arc"
-            "&async=use_ac:true,_fmt:prog&filter=0&start=0&num=30"
+        static wchar const object[] = L"search?q=js+find+min+element&asearch=arc"
+            "&async=use_ac:true,_fmt:prog"
             ;
         int object_c = STR_SIZE(object);
 
@@ -400,51 +408,48 @@ int main(int argc, char **argv) {
             return 1;
         }
 
-        DWORD headers_size = page_tmp_size;
-        if (!WinHttpQueryHeaders(
-            ggl_request,
-            WINHTTP_QUERY_RAW_HEADERS_CRLF,
-            WINHTTP_HEADER_NAME_BY_INDEX,
-            page_tmp, &headers_size,
-            WINHTTP_NO_HEADER_INDEX
-        )) {
-            printf("Headers? %ld\n", GetLastError());
-            return 1;
-        }
+        //DWORD headers_size = page_tmp_size;
+        //if (!WinHttpQueryHeaders(
+        //    ggl_request,
+        //    WINHTTP_QUERY_RAW_HEADERS_CRLF,
+        //    WINHTTP_HEADER_NAME_BY_INDEX,
+        //    page_tmp, &headers_size,
+        //    WINHTTP_NO_HEADER_INDEX
+        //)) {
+        //    printf("Headers? %ld\n", GetLastError());
+        //    return 1;
+        //}
+        //
+        //wprintf(L"Headers: `%.*s`\n", (int)headers_size, page_tmp);
 
-        wprintf(L"Headers: `%.*s`\n", (int)headers_size, page_tmp);
+        char *result_end = result_tmp;
 
-        static char const response_path[] = "./responses/page-";
-        int const response_path_c = STR_SIZE(response_path);
-        memcpy(tmp, response_path, response_path_c);
-        static int page_i = 0;
-        int extra_path_c = sprintf(tmp + response_path_c, "%d.txt", page_i);
-        tmp[response_path_c + extra_path_c] = '\0';
-        page_i++;
-
-        FILE *file = fopen(tmp, "wb");
-
-        char *page_end = page_tmp;
+        char *decode_end = page_tmp;
+        char *recv_end = page_tmp;
         char *const buffer_end = page_tmp + page_tmp_size;
 
-        DWORD dwSize;
-        DWORD dwDownloaded = 0;
-        LPSTR pszOutBuffer;
-        BOOL  bResults = FALSE;
+        static char const match_str[] = "<div jscontroller=\"SC7lYd\"";
+        int match_size = STR_SIZE(match_str);
+
+        int tag_end = 0;
+        enum {
+            SEARCH_NEXT, FIND_SEACH_END, PARSE_ANSWER
+        } State;
+        int decode_state = SEARCH_NEXT;
 
         while(true) {
             printf("Start!\n");
-            dwSize = 0;
+            DWORD dwSize = 0;
             if (!WinHttpQueryDataAvailable(ggl_request, &dwSize)) {
                 printf("Some stupid error #1 %ld\n", GetLastError());
                 return 1;
             }
             if(dwSize == 0) break;
 
-            dwDownloaded = 0;
-            int left = buffer_end - page_end;
-            if(!WinHttpReadData(
-                ggl_request, page_end,
+            DWORD dwDownloaded = 0;
+            int left = buffer_end - recv_end;
+            if(!WinHttpReadData( // utf-8!
+                ggl_request, recv_end,
                 left, &dwDownloaded
             )) {
                 printf("Some stupid error #2 %ld\n", GetLastError());
@@ -454,12 +459,101 @@ int main(int argc, char **argv) {
             if(dwDownloaded == 0) break;
 
             printf("Received %d bytes\n", (int)dwDownloaded);
+            recv_end += dwDownloaded;
 
-            while(!fwrite(page_end, dwDownloaded, 1, file)) printf("?");
+            next:
+            switch(decode_state) {
+                break; case SEARCH_NEXT: {
+                    if(recv_end - decode_end < match_size) goto end;
+                    int diff = get_diff(decode_end, match_str, match_size);
+                    decode_end += MAX(diff, 1);
+                    if(diff == match_size) {
+                        decode_state = FIND_SEACH_END;
+                        printf("Found\n");
+                    }
+                    goto next;
+                }
+                break; case FIND_SEACH_END: {
+                    if(recv_end - decode_end < 1) goto end;
+                    if(*decode_end == '>') {
+                        tag_end = 0;
+                        tag_stack[tag_end++] = ('d' << 16) | ('i' << 8) | ('v');
+                        decode_state = PARSE_ANSWER;
+                        printf("Found end\n");
+                        printf("<div>\n");
+                    }
+                    decode_end++;
+                    goto next;
+                }
+                break; case PARSE_ANSWER: {
+                    // drop parse if not enough bytes. Should not be a big problem.
+                    char *parse_end = decode_end;
+
+                    if(recv_end - parse_end < 1) goto end;
+                    bool match = *parse_end == '<';
+                    parse_end++;
+                    if(match) {
+                        bool closing = false;
+                        if(recv_end - parse_end < 1) goto end;
+                        if(*parse_end == '/') {
+                            closing = true;
+                            parse_end++;
+                        }
+
+                        char *name_start = parse_end;
+
+                        uint32_t name = 0;
+                        while(true) {
+                            if(recv_end - parse_end < 1) goto end;
+                            char s = *parse_end;
+                            if(s >= 'a' && s <= 'z') { // good enough
+                                name = (name << 8) | (uint8_t)s;
+                            } else {
+                                break;
+                            }
+                            parse_end++;
+                        }
+                        int name_size = parse_end - name_start;
+
+                        while(true) {
+                            if(recv_end - parse_end < 1) goto end;
+                            if(*parse_end == '>') break;
+                            parse_end++;
+                        }
+
+                        if(closing) {
+                            while(tag_end > 0) {
+                                tag_end--;
+                                if (tag_stack[tag_end] == name) {
+                                    for(int i = 0; i < tag_end; i++) {
+                                        printf("  ");
+                                    }
+                                    printf("</%.*s>\n", name_size, name_start);
+                                    break;
+                                }
+                            }
+                            if(tag_end == 0) {
+                                decode_state = SEARCH_NEXT;
+                                printf("Answer ended\n");
+                            }
+                        }
+                        else {
+                            for(int i = 0; i < tag_end; i++) {
+                                printf("  ");
+                            }
+                            printf("<%.*s>\n", name_size, name_start);
+                            tag_stack[tag_end++] = name;
+                        }
+                    }
+
+                    decode_end = parse_end;
+                    goto next;
+                }
+            }
+            end:;
         }
 
-        printf("Message sent %d\n", (int)(page_end - page_tmp));
-        fclose(file);
+        printf("Message sent %d\n", (int)(recv_end - page_tmp));
 
         return 0;
     }
@@ -538,10 +632,10 @@ int main(int argc, char **argv) {
                 }
                 uint8_t *client_msg = client_request + 6;
                 for(int i = 0; i < len; i++) {
-                    tmp[i] = client_msg[i] ^ mask[i % 4];
+                    result_tmp[i] = client_msg[i] ^ mask[i % 4];
                 }
 
-                printf("Message: %.*s\n", len, tmp);
+                printf("Message: %.*s\n", len, result_tmp);
 
                 printf("Request: `");
                 for(int i = 0; i < received; i++) {
@@ -552,7 +646,7 @@ int main(int argc, char **argv) {
                 static char const msg[] = "Hello Client!";
                 int const msg_c = STR_SIZE(msg);
 
-                uint8_t *response = (uint8_t*)tmp;
+                uint8_t *response = (uint8_t*)result_tmp;
                 response[0] = (uint8_t)((1 << 7) | 1);
                 response[1] = 13;
                 memcpy(response + 2, msg, 2 + msg_c);
@@ -567,7 +661,3 @@ int main(int argc, char **argv) {
 
     return 0;
 }
-
-#if 0
-}
-#endif
