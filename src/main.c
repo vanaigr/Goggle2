@@ -363,6 +363,8 @@ int main(int argc, char **argv) {
 
 
     if(it) {
+#define FAKE_INET 1
+#if !FAKE_INET
         static wchar const object[] = L"search?q=js+find+min+element&asearch=arc"
             "&async=use_ac:true,_fmt:prog"
             ;
@@ -421,6 +423,10 @@ int main(int argc, char **argv) {
         //}
         //
         //wprintf(L"Headers: `%.*s`\n", (int)headers_size, page_tmp);
+#else
+        static char const path[] = "responses/page-0.txt";
+        FILE *file = fopen(path, "rb");
+#endif
 
         char *result_end = result_tmp;
 
@@ -438,6 +444,7 @@ int main(int argc, char **argv) {
         int decode_state = SEARCH_NEXT;
 
         while(true) {
+#if !FAKE_INET
             printf("Start!\n");
             DWORD dwSize = 0;
             if (!WinHttpQueryDataAvailable(ggl_request, &dwSize)) {
@@ -445,9 +452,11 @@ int main(int argc, char **argv) {
                 return 1;
             }
             if(dwSize == 0) break;
+#endif
 
             DWORD dwDownloaded = 0;
             int left = buffer_end - recv_end;
+#if !FAKE_INET
             if(!WinHttpReadData( // utf-8!
                 ggl_request, recv_end,
                 left, &dwDownloaded
@@ -455,6 +464,9 @@ int main(int argc, char **argv) {
                 printf("Some stupid error #2 %ld\n", GetLastError());
                 return 1;
             }
+#else
+            dwDownloaded = fread(recv_end, 1, left, file);
+#endif
             if(left == dwDownloaded) printf("Oui %d\n", left);
             if(dwDownloaded == 0) break;
 
