@@ -51,6 +51,7 @@ enum {
 };
 static uint8_t client_request[2048] = "";
 static char result_tmp[result_tmp_size];
+static int result_status; // 0 - not started, 1 - started, 2 - finished
 static char page_tmp[page_tmp_size];
 static uint32_t tag_stack[tag_stack_size];
 
@@ -100,7 +101,12 @@ static void handle_server_socket(void) {
         printf("Sent %d of %d\n", sent, msg_c);
     }
     else if(received >= 14 && memcmp(client_request + 4, search, 10) == 0) {
+        if(result_status == 1) {
+            printf("Concurrent request\n");
+            goto error;
+        }
         printf("Returning search page\n");
+        result_status = 1;
 
         // https://github.com/searxng/searxng/issues/159
         // Note: to filter out useful results, use <div jscontroller="SC7lYd"
@@ -109,9 +115,6 @@ static void handle_server_socket(void) {
         static wchar const object_start[]
             = L"/search?asearch=arc&async=use_ac:true,_fmt:prog&q=";
         int object_start_c = STR_SIZE(object_start);
-
-        //int sent = send(conn_socket, page_header_msg, page_header_c, 0);
-        //assert(sent == page_header_c);
 
         wchar *object = (wchar*)page_tmp;
         memcpy(object, object_start, sizeof(object_start));
@@ -161,6 +164,12 @@ static void handle_server_socket(void) {
             goto error;
         }
 
+        // Send browser response page
+        int off = 0;
+        while((off += send(conn_socket, page_msg + off, page_c - off, 0) != page_c));
+        printf("Sent main page\n");
+
+
         bool ggl_recv = WinHttpReceiveResponse(ggl_request, NULL);
         if(!ggl_recv) {
             printf("Failed to receive request %lu\n", GetLastError()) ;
@@ -185,14 +194,21 @@ static void handle_server_socket(void) {
         FILE *file = fopen(path, "rb");
 #endif
 
-        static char const out_path[] = "responses/response.txt";
+        static char const out_path[] = "responses/response.html";
         FILE *out_file = fopen(out_path, "wb");
 
-        char *result_end = result_tmp;
+        uint32_t *result_size = result_tmp;
+        char *result_end = result_tmp + 4;
+
         char *ans_name_start = NULL;
+        bool url_added = false;
+        bool name_added = false;
+        bool description_added = false;
         int outer_descr_level = -1;
         int desc_level = -1;
         char *desc_start = NULL;
+
+        *result_size = 0;
 
         char *decode_end = page_tmp;
         char *recv_end = page_tmp;
@@ -204,7 +220,7 @@ static void handle_server_socket(void) {
         static char const href_str[] = "href=\"";
         int href_size = STR_SIZE(href_str);
 
-        static char const desc_outer_str[] = "data-sncf=\"2\"";
+        static char const desc_outer_str[] = "data-sncf=\""; // look further
         int desc_outer_str_size = STR_SIZE(desc_outer_str);
 
         int tag_end = 0;
@@ -340,7 +356,18 @@ static void handle_server_socket(void) {
                             a_parse_end++;
                             parse_end = a_parse_end;
 
-                            printf("URL: %.*s\n", (int)(href_end - href_begin), href_begin);
+                            int href_size = (int)(href_end - href_begin);
+                            if(!url_added) {
+                                printf("URL added at %d\n", *result_size);
+                                url_added = true;
+                                int href_size_b = MIN(href_size, 255);
+                                *result_end++ = 1;
+                                *result_end++ = href_size_b;
+                                memcpy(result_end, href_begin, href_size_b);
+                                result_end += href_size_b;
+                                *result_size = result_end - result_tmp - 4;
+                            }
+                            printf("URL: %.*s\n", href_size, href_begin);
                             not_a:;
                         }
 
@@ -361,11 +388,17 @@ static void handle_server_socket(void) {
                             ans_name_start = parse_end;
                         }
                         else if(closing && name == make_tag_name("h3")) {
-                            printf(
-                                "Name: %.*s\n",
-                                (int)(decode_end - ans_name_start),
-                                ans_name_start
-                            );
+                            int size = (int)(decode_end - ans_name_start);
+                            if(!name_added) {
+                                name_added = true;
+                                int size_b = MIN(size, 255);
+                                *result_end++ = 2;
+                                *result_end++ = size;
+                                memcpy(result_end, ans_name_start, size_b);
+                                result_end += size_b;
+                                *result_size = result_end - result_tmp - 4;
+                            }
+                            printf("Name: %.*s\n", size, ans_name_start);
                             ans_name_start = NULL;
                         }
 
@@ -392,15 +425,31 @@ static void handle_server_socket(void) {
                                 outer_descr_level = -1;
                             }
                             else if(desc_level >= tag_end) {
-                                printf(
-                                    "Desc: %.*s\n",
-                                    (int)(decode_end - desc_start),
-                                    desc_start
-                                );
+                                int size = (int)(decode_end - desc_start);
+                                if(!description_added) {
+                                    description_added = true;
+                                    int size_b = MIN(size, 255);
+                                    *result_end++ = 3;
+                                    *result_end++ = size;
+                                    memcpy(result_end, desc_start, size_b);
+                                    result_end += size_b;
+                                    *result_size = result_end - result_tmp - 4;
+                                }
+                                printf("Desc: %.*s\n", size, desc_start);
                                 desc_level = -1;
                             }
 
                             if(tag_end == 0) {
+                                ans_name_start = NULL;
+                                url_added = false;
+                                name_added = false;
+                                description_added = false;
+                                outer_descr_level = -1;
+                                desc_level = -1;
+                                desc_start = NULL;
+
+                                *result_end++ = 4;
+                                *result_size = result_end - result_tmp - 4;
                                 decode_state = SEARCH_NEXT;
                                 printf("Answer ended\n");
                             }
@@ -423,15 +472,10 @@ static void handle_server_socket(void) {
 
         fclose(out_file);
         printf("End!\n");
+        result_status = 2;
 
         WinHttpCloseHandle(ggl_conn);
         WinHttpCloseHandle(ggl_request);
-
-        //printf("Returning main page\n");
-        //msg = page_msg;
-        //msg_c = page_c;
-        //int size = send(conn_socket, msg, msg_c, 0);
-        //printf("Sent %d of %d\n", size, msg_c);
     }
     else if(received < 14 || client_request[4] == '/' && client_request[5] == ' ') {
         printf("Websockets? Surely...\n");
@@ -514,6 +558,27 @@ static void handle_server_socket(void) {
         websockets_sockets[websockets_c++] = conn_socket;
         printf("Sent %d of %d\n", size, msg_c);
 
+        response = page_tmp;
+        response[0] = (uint8_t)((1u << 7) | 2);
+        response[1] = 126;
+        uint32_t response_size = *(uint32_t*)result_tmp;
+        assert(response_size < 65536);
+        response[2] = (uint8_t)(response_size >> 8);
+        response[3] = (uint8_t)response_size;
+        memcpy(response + 4, result_tmp + 4, response_size);
+        int total_size = 4 + response_size;
+
+        for(int i = 0; i < 10; i++) {
+            printf("\\x%.2x", (uint8_t)response[i]);
+        }
+        printf("\n");
+
+        int sent_off = 0;
+        while((sent_off += send(
+                conn_socket, response + sent_off, total_size - sent_off, 0
+            )) < total_size);
+        printf("Sent %d: `%.*s`\n", size, msg_c, msg);
+
         return;
     }
     else {
@@ -522,11 +587,13 @@ static void handle_server_socket(void) {
 
 error:
     printf("Connection closed\n");
+    // hopefully this is not a query connection
+    // as this will deadlock everything with result_status == 1
     closesocket(conn_socket);
 }
 
 static int setup_page(void) {
-    FILE *file = fopen("src/test2.html", "rb");
+    FILE *file = fopen("src/answers.html", "rb");
     if(file == NULL) {
         printf("Error opening page file\n");
         return 1;

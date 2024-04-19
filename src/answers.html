@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <title>Answers</title>
+    </head>
+<style>
+    .ans { padding: 0.75rem 0.25rem; text-decoration: none; color: black; }
+    .name { font-size: 1.5rem; font-weight: bold; }
+</style>
+    <body>
+        Answers:
+        <div id="answers"></div>
+        <script>
+            const socket = new WebSocket("ws://localhost:1619");
+            socket.binaryType = 'arraybuffer' // why?
+
+            socket.addEventListener("open", (event) => {
+                console.log("Connection opened!");
+            });
+
+            const ans_cont = document.getElementById("answers")
+
+            socket.addEventListener("message", (event) => {
+                const fields = ["", "url", "name", "desc"]
+
+                console.log("Message");
+
+                const td = new TextDecoder('utf8')
+                const dv = new Uint8Array(event.data)
+
+                var ans = {}
+                var off = 0
+                while(off < dv.length) {
+                    const tag = dv[off]
+                    console.log(tag)
+
+                    off++
+                    if(tag == 4) {
+                        const root = document.createElement('a')
+                        root.setAttribute('href', ans.url)
+                        root.classList.add('ans')
+
+                        const url = document.createElement('div')
+                        url.textContent = ans.url
+
+                        const name = document.createElement('div')
+                        name.classList.add('name')
+                        name.textContent = ans.name
+
+                        const desc = document.createElement('div')
+                        desc.innerHTML = ans.desc
+                        root.append(url, name, desc)
+
+                        ans_cont.append(root)
+                    }
+                    else {
+                        const size = dv[off]
+                        off++
+                        const str = td.decode(dv.subarray(off, off + size))
+                        ans[fields[tag]] = str
+                        off += size
+                    }
+                }
+            });
+        </script>
+    </body>
+</html>
