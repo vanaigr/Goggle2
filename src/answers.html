@@ -11,7 +11,7 @@
         Answers:
         <div id="answers"></div>
         <script>
-            const socket = new WebSocket("ws://localhost:1619"); // add /ans
+            const socket = new WebSocket("ws://localhost:1619/ws");
             socket.binaryType = 'arraybuffer' // why?
 
             socket.addEventListener("open", (event) => {

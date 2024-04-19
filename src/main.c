@@ -77,6 +77,11 @@ static uint32_t make_tag_name(char *str) {
     return name;
 }
 
+static char const req_obj_search[] = "/search";
+static char const req_obj_ws[] = "/ws";
+static int const req_obj_search_size = STR_SIZE(req_obj_search);
+static int const req_obj_ws_size = STR_SIZE(req_obj_ws);
+
 typedef struct Result { bool err; } Result;
 #define OK ((Result){ false })
 #define ERR ((Result){ true })
@@ -110,14 +115,28 @@ static void handle_server_socket(void) {
     printf("Received %d bytes: \n`%.*s`\n", received, received, client_request);
     client_request[received] = '\0';
 
-    if(received < 3 || memcmp(client_request, get, 3) != 0) {
-        printf("Response not Implemented\n");
-        char const *msg = not_impl_msg;
-        int msg_c = not_impl_c;
-
-        if(send_complete(msg, msg_c, conn_socket).err) goto error;
+    uint8_t *req_obj_b = client_request;
+    while(true) {
+        if(*req_obj_b == ' ') { // only one space
+            req_obj_b++;
+            break;
+        }
+        if(*req_obj_b == '\0') {
+            printf("Truncated request w/o object\n");
+            goto error;
+        }
+        req_obj_b++;
     }
-    else if(received >= 14 && memcmp(client_request + 4, search, 10) == 0) {
+    uint8_t *req_obj_e = req_obj_b;
+    while(true) {
+        if(*req_obj_e == ' ' || *req_obj_e == '\0') break;
+        req_obj_e++;
+    }
+    int req_obj_size = req_obj_e - req_obj_b;
+
+    if(req_obj_size >= req_obj_search_size
+        && memcmp(req_obj_b, req_obj_search, req_obj_search_size) == 0
+    ) {
         if(result_status == 1) {
             printf("Concurrent request\n");
             goto error;
@@ -128,21 +147,17 @@ static void handle_server_socket(void) {
         // Note: to filter out useful results, use <div jscontroller="SC7lYd"
         // (this if from SearXNG engines/google.py results_xpath)
         // Example: https://google.com/search?q=abc&asearch=arc&async=use_ac:true,_fmt:prog
-        static wchar const object_start[]
-            = L"/search?asearch=arc&async=use_ac:true,_fmt:prog&q=";
-        int object_start_c = STR_SIZE(object_start);
+        static wchar const object_str[]
+            = L"/search?asearch=arc&async=use_ac:true,_fmt:prog&";
+        int object_str_c = STR_SIZE(object_str);
 
         wchar *object = (wchar*)page_tmp;
-        memcpy(object, object_start, sizeof(object_start));
-        int search_c = 0;
-        while(true) {
-            uint8_t const v = client_request[14 + search_c];
-            if(v == ' ' || v == '\0' || v == '\r') break;
-            assert(object_start_c + search_c < 2048);
-            object[object_start_c + search_c] = v; // char > wchar
-            search_c++;
-        }
-        object[object_start_c + search_c] = 0;
+        memcpy(object, object_str, sizeof(object_str));
+
+        uint8_t *param_cur = req_obj_b + req_obj_search_size + 1;
+        wchar_t *object_cur = object + object_str_c;
+        while(param_cur != req_obj_e) *object_cur++ = *param_cur++;
+        *object_cur = 0;
         wprintf(L"URL: %s\n", object);
 
 #define FAKE_INET 0
@@ -490,8 +505,9 @@ static void handle_server_socket(void) {
         WinHttpCloseHandle(ggl_conn);
         WinHttpCloseHandle(ggl_request);
     }
-    else if(received < 14 || client_request[4] == '/' && client_request[5] == ' ') {
-        printf("Websockets? Surely...\n");
+    if(req_obj_size == req_obj_ws_size
+        && memcmp(req_obj_b, req_obj_ws, req_obj_ws_size) == 0
+    ) {
         static char const header_msg[]
             = "HTTP/1.1 101 Switching Protocols\r\n"
             "Connection: Upgrade\r\nUpgrade: websocket\r\n"
