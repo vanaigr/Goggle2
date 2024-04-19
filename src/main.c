@@ -50,6 +50,7 @@ enum {
     page_tmp_size = 1024 * 1024,
 };
 static uint8_t client_request[2048] = "";
+static uint32_t result_size;
 static char result_tmp[result_tmp_size];
 static int result_status; // 0 - not started, 1 - started, 2 - finished
 static char page_tmp[page_tmp_size];
@@ -76,6 +77,24 @@ static uint32_t make_tag_name(char *str) {
     return name;
 }
 
+typedef struct Result { bool err; } Result;
+#define OK ((Result){ false })
+#define ERR ((Result){ true })
+
+static Result send_complete_(char const *msg, int size, SOCKET sock, char *file, int line) {
+    int off = 0;
+    while(off < size) {
+        int res = send(sock, msg + off, size - off, 0);
+        if(res == SOCKET_ERROR) {
+            printf("Error while sending at `%s`:%d  %d", file, line, WSAGetLastError());
+            return ERR;
+        }
+        off += res;
+    }
+    return OK;
+}
+#define send_complete(msg, size, sock) send_complete_((msg), (size), (sock), __FILE__, __LINE__)
+
 static void handle_server_socket(void) {
     SOCKET conn_socket = accept(server_socket, NULL, NULL);
     if (conn_socket == INVALID_SOCKET) {
@@ -83,29 +102,26 @@ static void handle_server_socket(void) {
         goto error;
     }
 
-    int received = recv(conn_socket, client_request, 2047, 0);
+    int received = recv(conn_socket, (char*)client_request, 2047, 0);
     if(received < 0) {
         printf("Error receiving\n");
         goto error;
     }
-    printf("Received %d bytes: `%.*s`\n", received, received, client_request);
+    printf("Received %d bytes: \n`%.*s`\n", received, received, client_request);
     client_request[received] = '\0';
-
 
     if(received < 3 || memcmp(client_request, get, 3) != 0) {
         printf("Response not Implemented\n");
-        char *msg = not_impl_msg;
+        char const *msg = not_impl_msg;
         int msg_c = not_impl_c;
 
-        int sent = send(conn_socket, msg, msg_c, 0);
-        printf("Sent %d of %d\n", sent, msg_c);
+        if(send_complete(msg, msg_c, conn_socket).err) goto error;
     }
     else if(received >= 14 && memcmp(client_request + 4, search, 10) == 0) {
         if(result_status == 1) {
             printf("Concurrent request\n");
             goto error;
         }
-        printf("Returning search page\n");
         result_status = 1;
 
         // https://github.com/searxng/searxng/issues/159
@@ -165,10 +181,8 @@ static void handle_server_socket(void) {
         }
 
         // Send browser response page
-        int off = 0;
-        while((off += send(conn_socket, page_msg + off, page_c - off, 0) != page_c));
+        if(send_complete(page_msg, page_c, conn_socket).err) goto error;
         printf("Sent main page\n");
-
 
         bool ggl_recv = WinHttpReceiveResponse(ggl_request, NULL);
         if(!ggl_recv) {
@@ -197,8 +211,7 @@ static void handle_server_socket(void) {
         static char const out_path[] = "responses/response.html";
         FILE *out_file = fopen(out_path, "wb");
 
-        uint32_t *result_size = result_tmp;
-        char *result_end = result_tmp + 4;
+        char *result_end = result_tmp;
 
         char *ans_name_start = NULL;
         bool url_added = false;
@@ -208,7 +221,7 @@ static void handle_server_socket(void) {
         int desc_level = -1;
         char *desc_start = NULL;
 
-        *result_size = 0;
+        result_size = 0;
 
         char *decode_end = page_tmp;
         char *recv_end = page_tmp;
@@ -358,14 +371,14 @@ static void handle_server_socket(void) {
 
                             int href_size = (int)(href_end - href_begin);
                             if(!url_added) {
-                                printf("URL added at %d\n", *result_size);
+                                printf("URL added at %d\n", result_size);
                                 url_added = true;
                                 int href_size_b = MIN(href_size, 255);
                                 *result_end++ = 1;
                                 *result_end++ = href_size_b;
                                 memcpy(result_end, href_begin, href_size_b);
                                 result_end += href_size_b;
-                                *result_size = result_end - result_tmp - 4;
+                                result_size = result_end - result_tmp;
                             }
                             printf("URL: %.*s\n", href_size, href_begin);
                             not_a:;
@@ -396,7 +409,7 @@ static void handle_server_socket(void) {
                                 *result_end++ = size;
                                 memcpy(result_end, ans_name_start, size_b);
                                 result_end += size_b;
-                                *result_size = result_end - result_tmp - 4;
+                                result_size = result_end - result_tmp;
                             }
                             printf("Name: %.*s\n", size, ans_name_start);
                             ans_name_start = NULL;
@@ -433,7 +446,7 @@ static void handle_server_socket(void) {
                                     *result_end++ = size;
                                     memcpy(result_end, desc_start, size_b);
                                     result_end += size_b;
-                                    *result_size = result_end - result_tmp - 4;
+                                    result_size = result_end - result_tmp;
                                 }
                                 printf("Desc: %.*s\n", size, desc_start);
                                 desc_level = -1;
@@ -449,7 +462,7 @@ static void handle_server_socket(void) {
                                 desc_start = NULL;
 
                                 *result_end++ = 4;
-                                *result_size = result_end - result_tmp - 4;
+                                result_size = result_end - result_tmp;
                                 decode_state = SEARCH_NEXT;
                                 printf("Answer ended\n");
                             }
@@ -471,7 +484,7 @@ static void handle_server_socket(void) {
         }
 
         fclose(out_file);
-        printf("End!\n");
+        printf("Result is %d bytes!\n", result_size);
         result_status = 2;
 
         WinHttpCloseHandle(ggl_conn);
@@ -490,7 +503,7 @@ static void handle_server_socket(void) {
         static char const key_header_name[] = "Sec-WebSocket-Key";
         int const key_header_c = STR_SIZE(key_header_name);
 
-        char const *pos = strstr(client_request, key_header_name);
+        char const *pos = strstr((char*)client_request, key_header_name);
         if(pos == NULL) {
             printf("No websocket key\n");
             goto error;
@@ -549,35 +562,20 @@ static void handle_server_socket(void) {
         memcpy(response, header_msg, header_msg_c);
         memcpy(accept, "\r\n\r\n", 4);
 
+        uint8_t *websock_response = (uint8_t*)accept + 4;
+        websock_response[0] = (uint8_t)((1u << 7) | 2);
+        websock_response[1] = 126;
+        assert(result_size < 65536);
+        websock_response[2] = (uint8_t)(result_size >> 8);
+        websock_response[3] = (uint8_t)result_size;
+        memcpy(websock_response + 4, result_tmp, result_size);
+        int websock_response_size = 4 + result_size;
+
         char *msg = response;
-        int msg_c = accept - response + 4;
-
-        printf("Responding with %d bytes: `%.*s`\n", msg_c, msg_c, msg);
-
-        int size = send(conn_socket, msg, msg_c, 0);
+        int msg_c = websock_response + websock_response_size - (uint8_t*)response;
+        if(send_complete(msg, msg_c, conn_socket).err) goto error;
         websockets_sockets[websockets_c++] = conn_socket;
-        printf("Sent %d of %d\n", size, msg_c);
-
-        response = page_tmp;
-        response[0] = (uint8_t)((1u << 7) | 2);
-        response[1] = 126;
-        uint32_t response_size = *(uint32_t*)result_tmp;
-        assert(response_size < 65536);
-        response[2] = (uint8_t)(response_size >> 8);
-        response[3] = (uint8_t)response_size;
-        memcpy(response + 4, result_tmp + 4, response_size);
-        int total_size = 4 + response_size;
-
-        for(int i = 0; i < 10; i++) {
-            printf("\\x%.2x", (uint8_t)response[i]);
-        }
-        printf("\n");
-
-        int sent_off = 0;
-        while((sent_off += send(
-                conn_socket, response + sent_off, total_size - sent_off, 0
-            )) < total_size);
-        printf("Sent %d: `%.*s`\n", size, msg_c, msg);
+        printf("Sent result");
 
         return;
     }
@@ -702,68 +700,75 @@ int main(int argc, char **argv) {
         }
 
         // is this quadratic bc of FD_ISSET?
-        for(int i = 0; i < websockets_c; i++) {
-            SOCKET *s = &websockets_sockets[i];
-            if(FD_ISSET(*s, &read_fs)) {
-                printf("Websocket received something!\n");
+        for(int i = websockets_c-1; i != -1; i--) {
+            SOCKET s = websockets_sockets[i];
+            if(!FD_ISSET(s, &read_fs)) continue;
 
-                int received = recv(*s, client_request, 2047, 0);
-                if(received < 0) {
-                    printf("Error receiving\n");
-                    return 32;
-                }
+            printf("Websocket received something!\n");
 
-                if(received < 1 || client_request[0] != 0x81) {
-                    // 8 for no continuation, 1 for text
-                    printf("first byte %x is not 0x81\n", client_request[0]);
-                    return 52;
-                }
-                if(received < 2 || (client_request[1] & 0x80) == 0) {
-                    printf("Message not masked\n");
-                    return 52;
-                }
-                int len = client_request[1] & 0x7fu;
-                if(len > 125) {
-                    printf("Unsupported length %d\n", len);
-                    return 52;
-                }
-                if(received < 6) {
-                    printf("Mask where\n");
-                    return 52;
-                }
+            int received = recv(s, client_request, 2047, 0);
+            if(received < 0) {
+                printf("Error receiving\n");
+                return 32;
+            }
+
+            if(received < 1 || client_request[0] != 0x88) {
+                // 8 for no continuation, 8 for close
+                printf("first byte %x is not expected\n", client_request[0]);
+                return 52;
+            }
+            if(received < 2 || (client_request[1] & 0x80) == 0) {
+                printf("Message not masked\n");
+                return 52;
+            }
+            int len = client_request[1] & 0x7fu;
+            if(len > 125) {
+                printf("Unsupported length %d\n", len);
+                return 52;
+            }
+            if(received < 6) {
+                printf("Mask where\n");
+                return 52;
+            }
 #define M(index) client_request[index]
-                uint8_t mask[4] = { M(2), M(3), M(4), M(5) };
+            uint8_t mask[4] = { M(2), M(3), M(4), M(5) };
 #undef M
-                if(received < 6 + len) {
-                    printf("Message len is smaller than currently available\n");
-                    return 52;
-                }
-                if(received > 2048) {
-                    printf("Message too big\n");
-                    return 52;
-                }
-                uint8_t *client_msg = client_request + 6;
-                for(int i = 0; i < len; i++) {
-                    result_tmp[i] = client_msg[i] ^ mask[i % 4];
-                }
+            if(received < 6 + len) {
+                printf("Message len is smaller than currently available\n");
+                return 52;
+            }
+            if(received > 2048) {
+                printf("Message too big\n");
+                return 52;
+            }
+            uint8_t *client_msg = client_request + 6;
+            uint8_t *response = (uint8_t*)page_tmp;
+            uint8_t *decoded_msg = response + 2;
+            for(int i = 0; i < len; i++) {
+                decoded_msg[i] = client_msg[i] ^ mask[i % 4];
+            }
 
-                printf("Message: %.*s\n", len, result_tmp);
+            printf("Message: %.*s\n", len, decoded_msg);
 
-                printf("Request: `");
-                for(int i = 0; i < received; i++) {
-                    printf("\\%.2x", (uint8_t)client_request[i]);
-                }
-                printf("`\n");
+            printf("Request: `");
+            for(int i = 0; i != received; i++) {
+                printf("%c", client_request[i]);
+            }
+            printf("`\n");
 
-                static char const msg[] = "Hello Client!";
-                int const msg_c = STR_SIZE(msg);
+            response[0] = (uint8_t)((1 << 7) | 8);
+            response[1] = len;
+            if(send_complete((char*)response, 2 + len, s).err) {
+                printf("Error while sending websocket close\n");
+            }
+            else {
+                printf("Sent closing websocket response\n");
+            }
 
-                uint8_t *response = (uint8_t*)result_tmp;
-                response[0] = (uint8_t)((1 << 7) | 1);
-                response[1] = 13;
-                memcpy(response + 2, msg, 2 + msg_c);
-                int size = send(*s, (char*)response, 2 + msg_c, 0);
-                printf("Sent %d: `%.*s`\n", size, msg_c, msg);
+            closesocket(s);
+            websockets_c--;
+            if(websockets_c > i) {
+                websockets_sockets[i] = websockets_sockets[websockets_c];
             }
         }
     }

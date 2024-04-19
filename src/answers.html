@@ -11,7 +11,7 @@
         Answers:
         <div id="answers"></div>
         <script>
-            const socket = new WebSocket("ws://localhost:1619");
+            const socket = new WebSocket("ws://localhost:1619"); // add /ans
             socket.binaryType = 'arraybuffer' // why?
 
             socket.addEventListener("open", (event) => {
@@ -41,11 +41,11 @@
                         root.classList.add('ans')
 
                         const url = document.createElement('div')
-                        url.textContent = ans.url
+                        url.innerHTML = ans.url
 
                         const name = document.createElement('div')
                         name.classList.add('name')
-                        name.textContent = ans.name
+                        name.innerHTML = ans.name
 
                         const desc = document.createElement('div')
                         desc.innerHTML = ans.desc
