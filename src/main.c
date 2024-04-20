@@ -89,7 +89,8 @@ static void handle_server_socket(void) {
         printf("Error receiving\n");
         goto error;
     }
-    printf("Received %d bytes: \n`%.*s`\n", received, received, client_request);
+    printf("Received request\n");
+    //printf("Received %d bytes: \n`%.*s`\n", received, received, client_request);
     client_request[received] = '\0';
 
     uint8_t *req_obj_b = client_request;
@@ -114,6 +115,10 @@ static void handle_server_socket(void) {
     if(req_obj_size >= req_obj_search_size
         && memcmp(req_obj_b, req_obj_search, req_obj_search_size) == 0
     ) {
+        // Send browser response page
+        if(send_main_page(conn_socket).err) goto error;
+        printf("Sent main page\n");
+
         result_c = extract(
             conn_socket, ggl_conn,
             req_obj_b + req_obj_search_size + 1, req_obj_e,
@@ -215,7 +220,7 @@ static void handle_server_socket(void) {
         int msg_c = websock_response + websock_response_size - (uint8_t*)response;
         if(send_complete(msg, msg_c, conn_socket).err) goto error;
         websockets_sockets[websockets_c++] = conn_socket;
-        printf("Sent result");
+        printf("Sent result\n");
 
         return;
     }
