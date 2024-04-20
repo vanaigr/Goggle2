@@ -37,3 +37,5 @@ inline int get_diff(char const *b1, char const *b2, int len) {
     }
     return len;
 }
+
+void print_cur_time();

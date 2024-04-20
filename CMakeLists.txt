@@ -12,6 +12,7 @@ add_executable(${EXE_NAME})
 target_compile_definitions(${EXE_NAME} PRIVATE _CRT_SECURE_NO_WARNINGS)
 
 set(CMAKE_C_FLAGS_DEBUG "-O1")
+set(CMAKE_C_FLAGS_RELEASE "-O3 -DNDEBUG")
 
 if (CMAKE_C_COMPILER_ID MATCHES "Clang")
     #-pedantic -Wall -Wextra -Werror

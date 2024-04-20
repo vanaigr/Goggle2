@@ -73,6 +73,18 @@ Result send_complete_(char const *msg, int size, SOCKET sock, char *file, int li
 }
 
 
+static long long frequency_s, frequency_ms;
+
+void print_cur_time() {
+    LARGE_INTEGER it;
+    QueryPerformanceCounter(&it);
+    long long time = it.QuadPart;
+
+    int ms = (time / frequency_ms) % 1000;
+    int s = (time / frequency_s) % 1000;
+    printf("%3d'%03d\n", s, ms);
+}
+
 Result send_main_page(SOCKET sock) {
     return send_complete(page_msg, page_c, sock);
 }
@@ -89,7 +101,8 @@ static void handle_server_socket(void) {
         printf("Error receiving\n");
         goto error;
     }
-    printf("Received request\n");
+    printf("Received request! ");
+    print_cur_time();
     //printf("Received %d bytes: \n`%.*s`\n", received, received, client_request);
     client_request[received] = '\0';
 
@@ -117,7 +130,8 @@ static void handle_server_socket(void) {
     ) {
         // Send browser response page
         if(send_main_page(conn_socket).err) goto error;
-        printf("Sent main page\n");
+        printf("Sent main page ");
+        print_cur_time();
 
         result_c = extract(
             conn_socket, ggl_conn,
@@ -126,7 +140,7 @@ static void handle_server_socket(void) {
             result, result + result_size
         );
     }
-    if(req_obj_size == req_obj_ws_size
+    else if(req_obj_size == req_obj_ws_size
         && memcmp(req_obj_b, req_obj_ws, req_obj_ws_size) == 0
     ) {
         static char const header_msg[]
@@ -220,12 +234,14 @@ static void handle_server_socket(void) {
         int msg_c = websock_response + websock_response_size - (uint8_t*)response;
         if(send_complete(msg, msg_c, conn_socket).err) goto error;
         websockets_sockets[websockets_c++] = conn_socket;
-        printf("Sent result\n");
+        printf("Sent result ");
+        print_cur_time();
 
         return;
     }
     else {
-        printf("Not sending anything\n");
+        printf("Not sending anything ");
+        print_cur_time();
     }
 
 error:
@@ -265,6 +281,11 @@ static int setup_page(void) {
 
 int main(int argc, char **argv) {
     WSADATA wsa;
+
+    LARGE_INTEGER frequency;
+    QueryPerformanceFrequency(&frequency);
+    frequency_s = frequency.QuadPart;
+    frequency_ms = frequency_s / 1000;
 
     printf("\nInitialising Winsock...");
     if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
@@ -320,7 +341,8 @@ int main(int argc, char **argv) {
     fd_set error_fs;
 
     while(true) {
-        printf("\nWaiting for incoming connections...\n");
+        printf("\nWaiting for incoming connections... ");
+        print_cur_time();
 
         FD_ZERO(&read_fs);
         FD_ZERO(&error_fs);

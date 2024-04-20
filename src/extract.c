@@ -147,7 +147,9 @@ uint32_t extract(
     } State;
     int decode_state = SEARCH_NEXT;
 
-    printf("Receiving page!\n");
+    printf("Receiving page! ");
+    print_cur_time();
+
     while(true) {
 #if !FAKE_INET
         DWORD cur_avaliable = 0;
@@ -416,7 +418,8 @@ uint32_t extract(
     OUT_CLOSE(out_file);
 
     uint32_t result_size = result_end - result_b;
-    printf("Result is %d bytes!\n", result_size);
+    printf("Result is %d bytes! ", result_size);
+    print_cur_time();
 
     WinHttpCloseHandle(ggl_request);
 
