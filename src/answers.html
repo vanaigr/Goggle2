@@ -35,7 +35,13 @@
                     console.log(tag)
 
                     off++
-                    if(tag == 4) {
+                    if(tag == 5) {
+                        const root = document.createElement('div')
+                        root.innerText = "None!"
+
+                        ans_cont.append(root);
+                    }
+                    else if(tag == 4) {
                         const root = document.createElement('a')
                         root.setAttribute('href', ans.url)
                         root.classList.add('ans')

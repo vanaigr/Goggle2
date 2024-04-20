@@ -11,11 +11,10 @@
 
 #include<sha1/sha1.h>
 
+#include"common.h"
+
 #pragma comment(lib, "winhttp.lib")
 #pragma comment(lib, "ws2_32.lib")
-
-#define ARR_SIZE(arr) (sizeof((arr)) / sizeof((arr)[0]))
-#define STR_SIZE(str) (ARR_SIZE((str)) - 1)
 
 static const char page_header_msg[]
     = "HTTP/1.1 200 OK\r\n"
@@ -38,6 +37,7 @@ static SOCKET websockets_sockets[64];
 static int websockets_c = 0;
 
 static HINTERNET winhttp_state = NULL;
+static HINTERNET ggl_conn = NULL;
 
 static char const head_cmp[] = "<head>";
 static int const head_cmp_c = STR_SIZE(head_cmp);
@@ -46,47 +46,20 @@ static int const end_head_cmp_c = STR_SIZE(end_head_cmp);
 
 enum {
     tag_stack_size = 256,
-    result_tmp_size = 65536,
-    page_tmp_size = 1024 * 1024,
+    result_size = 65536,
+    tmp_size = 1024 * 1024,
 };
 static uint8_t client_request[2048] = "";
-static uint32_t result_size;
-static char result_tmp[result_tmp_size];
-static int result_status; // 0 - not started, 1 - started, 2 - finished
-static char page_tmp[page_tmp_size];
-static uint32_t tag_stack[tag_stack_size];
-
-typedef unsigned short wchar;
-
-#define MIN(a, b) ((a) < (b) ? (a) : (b))
-#define MAX(a, b) ((a) > (b) ? (a) : (b))
-static int get_diff(char const *b1, char const *b2, int len) {
-    for(int i = 0; i < len; i++) {
-        if(b1[i] != b2[i]) return i;
-    }
-    return len;
-}
-
-static uint32_t make_tag_name(char *str) __attribute__((const));
-static uint32_t make_tag_name(char *str) {
-    uint32_t name = 0;
-    while(*str) {
-        name = (name << 8) | (uint8_t)(*str);
-        str++;
-    }
-    return name;
-}
+static uint32_t result_c;
+static char result[result_size];
+static char tmp[tmp_size];
 
 static char const req_obj_search[] = "/search";
 static char const req_obj_ws[] = "/ws";
 static int const req_obj_search_size = STR_SIZE(req_obj_search);
 static int const req_obj_ws_size = STR_SIZE(req_obj_ws);
 
-typedef struct Result { bool err; } Result;
-#define OK ((Result){ false })
-#define ERR ((Result){ true })
-
-static Result send_complete_(char const *msg, int size, SOCKET sock, char *file, int line) {
+Result send_complete_(char const *msg, int size, SOCKET sock, char *file, int line) {
     int off = 0;
     while(off < size) {
         int res = send(sock, msg + off, size - off, 0);
@@ -98,7 +71,11 @@ static Result send_complete_(char const *msg, int size, SOCKET sock, char *file,
     }
     return OK;
 }
-#define send_complete(msg, size, sock) send_complete_((msg), (size), (sock), __FILE__, __LINE__)
+
+
+Result send_main_page(SOCKET sock) {
+    return send_complete(page_msg, page_c, sock);
+}
 
 static void handle_server_socket(void) {
     SOCKET conn_socket = accept(server_socket, NULL, NULL);
@@ -137,373 +114,12 @@ static void handle_server_socket(void) {
     if(req_obj_size >= req_obj_search_size
         && memcmp(req_obj_b, req_obj_search, req_obj_search_size) == 0
     ) {
-        if(result_status == 1) {
-            printf("Concurrent request\n");
-            goto error;
-        }
-        result_status = 1;
-
-        // https://github.com/searxng/searxng/issues/159
-        // Note: to filter out useful results, use <div jscontroller="SC7lYd"
-        // (this if from SearXNG engines/google.py results_xpath)
-        // Example: https://google.com/search?q=abc&asearch=arc&async=use_ac:true,_fmt:prog
-        static wchar const object_str[]
-            = L"/search?asearch=arc&async=use_ac:true,_fmt:prog&";
-        int object_str_c = STR_SIZE(object_str);
-
-        wchar *object = (wchar*)page_tmp;
-        memcpy(object, object_str, sizeof(object_str));
-
-        uint8_t *param_cur = req_obj_b + req_obj_search_size + 1;
-        wchar_t *object_cur = object + object_str_c;
-        while(param_cur != req_obj_e) *object_cur++ = *param_cur++;
-        *object_cur = 0;
-        wprintf(L"URL: %s\n", object);
-
-#define FAKE_INET 0
-#if !FAKE_INET
-        static wchar const hdrs[] = L"accept: */*\r\n";
-
-        HINTERNET ggl_conn = WinHttpConnect(
-            winhttp_state, L"www.google.com", INTERNET_DEFAULT_HTTPS_PORT, 0
+        result_c = extract(
+            conn_socket, ggl_conn,
+            req_obj_b + req_obj_search_size + 1, req_obj_e,
+            tmp, tmp + tmp_size,
+            result, result + result_size
         );
-        if (!ggl_conn) {
-            printf("Failed to connect: %lu\n", GetLastError());
-            goto error;
-        }
-
-        static wchar const *accept[] = {
-            L"*/*", NULL
-            //"text/html", "application/xhtml+xml", "application/xml;q=0.9", NULL
-        };
-
-        HINTERNET ggl_request = WinHttpOpenRequest(
-            ggl_conn, NULL, object, NULL, L"https://www.google.com/", accept,
-            WINHTTP_FLAG_SECURE | WINHTTP_FLAG_REFRESH
-        );
-        if(!ggl_request) {
-            printf("Failed to create(?) request %lu\n", GetLastError()) ;
-            goto error;
-        }
-
-        bool ggl_sent = WinHttpSendRequest(
-            ggl_request, hdrs, ARR_SIZE(hdrs) - 1,
-            WINHTTP_NO_REQUEST_DATA, 0, 0, 0
-        );
-        if(!ggl_sent) {
-            printf("Failed to send request %lu\n", GetLastError()) ;
-            goto error;
-        }
-
-        // Send browser response page
-        if(send_complete(page_msg, page_c, conn_socket).err) goto error;
-        printf("Sent main page\n");
-
-        bool ggl_recv = WinHttpReceiveResponse(ggl_request, NULL);
-        if(!ggl_recv) {
-            printf("Failed to receive request %lu\n", GetLastError()) ;
-            goto error;
-        }
-
-        //DWORD headers_size = page_tmp_size;
-        //if (!WinHttpQueryHeaders(
-        //    ggl_request,
-        //    WINHTTP_QUERY_RAW_HEADERS_CRLF,
-        //    WINHTTP_HEADER_NAME_BY_INDEX,
-        //    page_tmp, &headers_size,
-        //    WINHTTP_NO_HEADER_INDEX
-        //)) {
-        //    printf("Headers? %ld\n", GetLastError());
-        //    return 1;
-        //}
-        //
-        //wprintf(L"Headers: `%.*s`\n", (int)headers_size, page_tmp);
-#else
-        static char const path[] = "responses/page-0.txt";
-        FILE *file = fopen(path, "rb");
-#endif
-
-        static char const out_path[] = "responses/response.html";
-        FILE *out_file = fopen(out_path, "wb");
-
-        char *result_end = result_tmp;
-
-        char *ans_name_start = NULL;
-        bool url_added = false;
-        bool name_added = false;
-        bool description_added = false;
-        int outer_descr_level = -1;
-        int desc_level = -1;
-        char *desc_start = NULL;
-
-        result_size = 0;
-
-        char *decode_end = page_tmp;
-        char *recv_end = page_tmp;
-        char *const buffer_end = page_tmp + page_tmp_size;
-
-        static char const match_str[] = "<div jscontroller=\"SC7lYd\"";
-        int match_size = STR_SIZE(match_str);
-
-        static char const href_str[] = "href=\"";
-        int href_size = STR_SIZE(href_str);
-
-        static char const desc_outer_str[] = "data-sncf=\""; // look further
-        int desc_outer_str_size = STR_SIZE(desc_outer_str);
-
-        int tag_end = 0;
-        enum {
-            SEARCH_NEXT, FIND_SEACH_END, PARSE_ANSWER
-        } State;
-        int decode_state = SEARCH_NEXT;
-
-        while(true) {
-#if !FAKE_INET
-            printf("Start!\n");
-            DWORD dwSize = 0;
-            if (!WinHttpQueryDataAvailable(ggl_request, &dwSize)) {
-                printf("Some stupid error #1 %ld\n", GetLastError());
-                goto error;
-            }
-            if(dwSize == 0) break;
-#endif
-
-            DWORD dwDownloaded = 0;
-            int left = buffer_end - recv_end;
-#if !FAKE_INET
-            if(!WinHttpReadData( // utf-8!
-                ggl_request, recv_end,
-                left, &dwDownloaded
-            )) {
-                printf("Some stupid error #2 %ld\n", GetLastError());
-                goto error;
-            }
-#else
-            dwDownloaded = fread(recv_end, 1, left, file);
-#endif
-            if(left == dwDownloaded) printf("Oui %d\n", left);
-            if(dwDownloaded == 0) break;
-
-            for(int i = 0; i < 10 && !fwrite(recv_end, dwDownloaded, 1, out_file); i++);
-
-            printf("Received %d bytes\n", (int)dwDownloaded);
-            recv_end += dwDownloaded;
-
-            next:
-            switch(decode_state) {
-                break; case SEARCH_NEXT: {
-                    if(recv_end - decode_end < match_size) goto end;
-                    int diff = get_diff(decode_end, match_str, match_size);
-                    decode_end += MAX(diff, 1);
-                    if(diff == match_size) {
-                        decode_state = FIND_SEACH_END;
-                        printf("Found\n");
-                    }
-                    goto next;
-                }
-                break; case FIND_SEACH_END: {
-                    if(recv_end - decode_end < 1) goto end;
-                    if(*decode_end == '>') {
-                        tag_end = 0;
-                        tag_stack[tag_end++] = make_tag_name("div");
-                        decode_state = PARSE_ANSWER;
-                        printf("Found end\n");
-                        //printf("<div>\n");
-                    }
-                    decode_end++;
-                    goto next;
-                }
-                break; case PARSE_ANSWER: {
-                    // drop parse if not enough bytes. Should not be a big problem.
-                    char *parse_end = decode_end;
-
-                    if(recv_end - parse_end < 1) goto end;
-                    bool match = *parse_end == '<';
-                    parse_end++;
-                    if(match) {
-                        bool closing = false;
-                        if(recv_end - parse_end < 1) goto end;
-                        if(*parse_end == '/') {
-                            closing = true;
-                            parse_end++;
-                        }
-
-                        char *name_start = parse_end;
-
-                        uint32_t name = 0;
-                        while(true) {
-                            if(recv_end - parse_end < 1) goto end;
-                            char s = *parse_end;
-                            if((s >= 'a' && s <= 'z') || (s >= '0' && s <= '9')) {
-                                name = (name << 8) | (uint8_t)s;
-                            } else {
-                                break;
-                            }
-                            parse_end++;
-                        }
-                        int name_size = parse_end - name_start;
-
-                        if(!closing && name == make_tag_name("div")) {
-                            char *desc_parse_end = parse_end;
-
-                            while(true) {
-                                if(recv_end - desc_parse_end < desc_outer_str_size) {
-                                    goto end;
-                                }
-                                if(*desc_parse_end == '>') goto not_desc;
-                                int diff = get_diff(
-                                    desc_parse_end, desc_outer_str,
-                                    desc_outer_str_size
-                                );
-                                desc_parse_end += MAX(diff, 1);
-                                if(diff == desc_outer_str_size) break;
-                            }
-
-                            outer_descr_level = tag_end;
-                            parse_end = desc_parse_end;
-                            not_desc:;
-                        }
-                        else if(!closing && name == 'a') {
-                            char *a_parse_end = parse_end;
-                            while(true) {
-                                if(recv_end - a_parse_end < href_size) goto end;
-                                if(*a_parse_end == '>') goto not_a;
-                                int diff = get_diff(a_parse_end, href_str, href_size);
-                                a_parse_end += MAX(diff, 1);
-                                if(diff == href_size) break;
-                            }
-
-                            char *href_begin = a_parse_end;
-                            while(true) {
-                                if(recv_end - a_parse_end < 1) goto end;
-                                if(*a_parse_end == '>') goto not_a;
-                                if(*a_parse_end == '"') break;
-                                a_parse_end++;
-                            }
-                            char *href_end = a_parse_end;
-                            a_parse_end++;
-                            parse_end = a_parse_end;
-
-                            int href_size = (int)(href_end - href_begin);
-                            if(!url_added) {
-                                printf("URL added at %d\n", result_size);
-                                url_added = true;
-                                int href_size_b = MIN(href_size, 255);
-                                *result_end++ = 1;
-                                *result_end++ = href_size_b;
-                                memcpy(result_end, href_begin, href_size_b);
-                                result_end += href_size_b;
-                                result_size = result_end - result_tmp;
-                            }
-                            printf("URL: %.*s\n", href_size, href_begin);
-                            not_a:;
-                        }
-
-                        while(true) {
-                            if(recv_end - parse_end < 1) goto end;
-                            if(*parse_end++ == '>') break;
-                        }
-
-                        if(
-                            !closing && outer_descr_level != -1
-                            && tag_end == outer_descr_level + 1
-                        ) {
-                            outer_descr_level = -1;
-                            desc_level = tag_end;
-                            desc_start = parse_end;
-                        }
-                        else if(!closing && name == make_tag_name("h3")) {
-                            ans_name_start = parse_end;
-                        }
-                        else if(closing && name == make_tag_name("h3")) {
-                            int size = (int)(decode_end - ans_name_start);
-                            if(!name_added) {
-                                name_added = true;
-                                int size_b = MIN(size, 255);
-                                *result_end++ = 2;
-                                *result_end++ = size;
-                                memcpy(result_end, ans_name_start, size_b);
-                                result_end += size_b;
-                                result_size = result_end - result_tmp;
-                            }
-                            printf("Name: %.*s\n", size, ans_name_start);
-                            ans_name_start = NULL;
-                        }
-
-                        if(name == make_tag_name("br")) {
-                            //for(int i = 0; i < tag_end; i++) {
-                            //    printf("  ");
-                            //}
-                            //printf("<%.*s>\n", name_size, name_start);
-                        }
-                        else if(closing) {
-                            while(tag_end > 0) {
-                                tag_end--;
-                                if (tag_stack[tag_end] == name) {
-                                    //for(int i = 0; i < tag_end; i++) {
-                                    //    printf("  ");
-                                    //}
-                                    //printf("</%.*s>\n", name_size, name_start);
-                                    break;
-                                }
-                            }
-
-                            if(outer_descr_level >= tag_end) {
-                                printf("Desc none!\n");
-                                outer_descr_level = -1;
-                            }
-                            else if(desc_level >= tag_end) {
-                                int size = (int)(decode_end - desc_start);
-                                if(!description_added) {
-                                    description_added = true;
-                                    int size_b = MIN(size, 255);
-                                    *result_end++ = 3;
-                                    *result_end++ = size;
-                                    memcpy(result_end, desc_start, size_b);
-                                    result_end += size_b;
-                                    result_size = result_end - result_tmp;
-                                }
-                                printf("Desc: %.*s\n", size, desc_start);
-                                desc_level = -1;
-                            }
-
-                            if(tag_end == 0) {
-                                ans_name_start = NULL;
-                                url_added = false;
-                                name_added = false;
-                                description_added = false;
-                                outer_descr_level = -1;
-                                desc_level = -1;
-                                desc_start = NULL;
-
-                                *result_end++ = 4;
-                                result_size = result_end - result_tmp;
-                                decode_state = SEARCH_NEXT;
-                                printf("Answer ended\n");
-                            }
-                        }
-                        else {
-                            //for(int i = 0; i < tag_end; i++) {
-                            //    printf("  ");
-                            //}
-                            //printf("<%.*s>\n", name_size, name_start);
-                            tag_stack[tag_end++] = name;
-                        }
-                    }
-
-                    decode_end = parse_end;
-                    goto next;
-                }
-            }
-            end:;
-        }
-
-        fclose(out_file);
-        printf("Result is %d bytes!\n", result_size);
-        result_status = 2;
-
-        WinHttpCloseHandle(ggl_conn);
-        WinHttpCloseHandle(ggl_request);
     }
     if(req_obj_size == req_obj_ws_size
         && memcmp(req_obj_b, req_obj_ws, req_obj_ws_size) == 0
@@ -541,7 +157,7 @@ static void handle_server_socket(void) {
         // skip '<name>: '
         pos += key_header_c + 2;
 
-        uint8_t *digest = (uint8_t*)page_tmp;
+        uint8_t *digest = (uint8_t*)tmp;
         uint8_t *key = digest;
         char *response = (char*)digest;
 
@@ -580,12 +196,20 @@ static void handle_server_socket(void) {
 
         uint8_t *websock_response = (uint8_t*)accept + 4;
         websock_response[0] = (uint8_t)((1u << 7) | 2);
-        websock_response[1] = 126;
-        assert(result_size < 65536);
-        websock_response[2] = (uint8_t)(result_size >> 8);
-        websock_response[3] = (uint8_t)result_size;
-        memcpy(websock_response + 4, result_tmp, result_size);
-        int websock_response_size = 4 + result_size;
+        int websock_response_size;
+        if(result_c == -1) {
+            websock_response[1] = 1;
+            websock_response[2] = 5;
+            websock_response_size = 3;
+        }
+        else {
+            assert(result_c < 65536);
+            websock_response[1] = 126;
+            websock_response[2] = (uint8_t)(result_c >> 8);
+            websock_response[3] = (uint8_t)result_c;
+            memcpy(websock_response + 4, result, result_c);
+            websock_response_size = 4 + result_c;
+        }
 
         char *msg = response;
         int msg_c = websock_response + websock_response_size - (uint8_t*)response;
@@ -601,8 +225,6 @@ static void handle_server_socket(void) {
 
 error:
     printf("Connection closed\n");
-    // hopefully this is not a query connection
-    // as this will deadlock everything with result_status == 1
     closesocket(conn_socket);
 }
 
@@ -652,6 +274,14 @@ int main(int argc, char **argv) {
     );
     if(!winhttp_state) {
         printf("Failed to init winhttp %ld\n", GetLastError());
+        return 1;
+    }
+
+    ggl_conn = WinHttpConnect(
+        winhttp_state, L"www.google.com", INTERNET_DEFAULT_HTTPS_PORT, 0
+    );
+    if (!ggl_conn) {
+        printf("Failed to connect to google: %lu\n", GetLastError());
         return 1;
     }
 
@@ -758,7 +388,7 @@ int main(int argc, char **argv) {
                 return 52;
             }
             uint8_t *client_msg = client_request + 6;
-            uint8_t *response = (uint8_t*)page_tmp;
+            uint8_t *response = (uint8_t*)tmp;
             uint8_t *decoded_msg = response + 2;
             for(int i = 0; i < len; i++) {
                 decoded_msg[i] = client_msg[i] ^ mask[i % 4];
@@ -789,8 +419,10 @@ int main(int argc, char **argv) {
         }
     }
 
-    closesocket(server_socket);
-    WSACleanup();
+    //closesocket(server_socket);
+    //WSACleanup();
+    //WinHttpCloseHandle(ggl_conn);
+    //WinHttpCloseHandle(winhttp_state);
 
     return 0;
 }
