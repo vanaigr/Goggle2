@@ -33,6 +33,65 @@ static uint32_t make_tag_name(char *str) {
 #else
 #   define TREE_PRINTF(...)
 #endif
+; // formatting is crazy otherwise
+
+SOCKET main_socket;
+
+static void cb(
+  HINTERNET hInternet,
+  DWORD_PTR dwContext,
+  DWORD dwInternetStatus,
+  LPVOID lpvStatusInformation,
+  DWORD dwStatusInformationLength
+) {
+    char *str;
+    switch(dwInternetStatus) {
+        break; case WINHTTP_CALLBACK_STATUS_SENDREQUEST_COMPLETE: {
+            str = "SENDREQUEST_COMPLETE";
+        }
+        break; case WINHTTP_CALLBACK_STATUS_REDIRECT: {
+            str = "REDIRECT";
+        }
+        break; case WINHTTP_CALLBACK_STATUS_SECURE_FAILURE: {
+            str = "SECURE_FAILURE";
+        }
+        break; case WINHTTP_CALLBACK_STATUS_INTERMEDIATE_RESPONSE: {
+            str = "INTERMEDIATE_RESPONSE";
+        }
+        break; case WINHTTP_CALLBACK_STATUS_RESOLVING_NAME: {
+            str = "RESOLVING_NAME";
+        }
+        break; case WINHTTP_CALLBACK_STATUS_NAME_RESOLVED: {
+            str = "NAME_RESOLVED";
+        }
+        break; case WINHTTP_CALLBACK_STATUS_CONNECTING_TO_SERVER: {
+            str = "CONNECTING_TO_SERVER";
+        }
+        break; case WINHTTP_CALLBACK_STATUS_CONNECTED_TO_SERVER: {
+            str = "CONNECTED_TO_SERVER";
+        }
+        break; case WINHTTP_CALLBACK_STATUS_SENDING_REQUEST: {
+            str = "SENDING_REQUEST";
+        }
+        break; case WINHTTP_CALLBACK_STATUS_REQUEST_SENT: {
+            str = "REQUEST_SENT";
+        }
+        break; case WINHTTP_CALLBACK_STATUS_RECEIVING_RESPONSE: {
+            str = "RECEIVING_RESPONSE";
+        }
+        break; case WINHTTP_CALLBACK_STATUS_RESPONSE_RECEIVED: {
+            str = "RESPONSE_RECEIVED";
+        }
+        break; case WINHTTP_CALLBACK_STATUS_HANDLE_CLOSING: {
+            str = "HANDLE_CLOSING";
+        }
+        break; default: {
+            str = "WHA???";
+        }
+    }
+    printf("Status %ld %s ", dwInternetStatus, str);
+    print_cur_time();
+}
 
 uint32_t extract(
     SOCKET sock, HINTERNET ggl_conn,
@@ -45,7 +104,7 @@ uint32_t extract(
     // (this if from SearXNG engines/google.py results_xpath)
     // Example: https://google.com/search?q=abc&asearch=arc&async=use_ac:true,_fmt:prog
     static wchar const object_str[]
-        = L"/search?asearch=arc&async=use_ac:true,_fmt:prog&";
+        = L"/search?asearch=arc&async=use_ac:true,_fmt:prog&num=2&";
     int object_str_c = STR_SIZE(object_str);
 
     wchar *object = (wchar*)tmp;
@@ -75,6 +134,12 @@ uint32_t extract(
         goto error;
     }
 
+    WinHttpSetStatusCallback(ggl_request, cb,
+            WINHTTP_CALLBACK_FLAG_ALL_NOTIFICATIONS, 0);
+
+    printf("Created request!");
+    print_cur_time();
+
     bool ggl_sent = WinHttpSendRequest(
         ggl_request, hdrs, ARR_SIZE(hdrs) - 1,
         WINHTTP_NO_REQUEST_DATA, 0, 0, 0
@@ -84,11 +149,32 @@ uint32_t extract(
         goto error;
     }
 
+    printf("Sent request! ");
+    print_cur_time();
+
     bool ggl_recv = WinHttpReceiveResponse(ggl_request, NULL);
     if(!ggl_recv) {
         printf("Failed to receive request %lu\n", GetLastError()) ;
         goto error;
     }
+
+    printf("Received response! ");
+    print_cur_time();
+
+    struct timeval timeout;
+    timeout.tv_sec = 0;
+    timeout.tv_usec = 0;
+    fd_set readfds;
+    FD_ZERO(&readfds);
+    FD_SET(main_socket, &readfds);
+    int result = select(0, &readfds, NULL, NULL, &timeout);
+    if(FD_ISSET(main_socket, &readfds)) {
+        printf("Someone is trying to connect!\n");
+    }
+    else {
+        printf("Noone is trying to connect :(\n");
+    }
+
 
     //DWORD headers_size = page_tmp_size;
     //if (!WinHttpQueryHeaders(

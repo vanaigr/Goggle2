@@ -16,33 +16,52 @@
 #pragma comment(lib, "winhttp.lib")
 #pragma comment(lib, "ws2_32.lib")
 
-static const char page_header_msg[]
-    = "HTTP/1.1 200 OK\r\n"
-    "Content-type: text/html\r\n"
-    "\r\n<!DOCTYPE html><html><head></head>";
-int const page_header_c = STR_SIZE(page_header_msg);
-static char const not_found_msg[] = "HTTP/1.1 404 Not Found\r\n\r\n";
-int const not_found_c = STR_SIZE(not_found_msg);
-static char const not_impl_msg[] = "HTTP/1.1 501 Not Implemented\r\n\r\n";
-int const not_impl_c = STR_SIZE(not_impl_msg);
+#define WEBSOCK_JS_KEY "b"
+enum { websock_js_key_size = STR_SIZE(WEBSOCK_JS_KEY), };
+
+static char const page_header[]
+    = "HTTP/1.1 200 .\r\n"
+    "content-type: text/html\r\n"
+    "content-length: ";
+static char const websock_js_header[]
+    = "HTTP/1.1 200 .\r\n"
+    "content-type: text/html\r\n"
+    "cache-control: must-revalidate\r\n"
+    "etag: \"" WEBSOCK_JS_KEY "\"\r\n"
+    "content-length: ";
+static char const not_modified_response[]
+    = "HTTP/1.1 304 .\r\n\r\n";
+static char const not_found_response[]
+    = "HTTP/1.1 404 .\r\n\r\n";
 
 static char const get[] = "GET";
 static char const search[] = "/search?q=";
 
 static char *page_msg;
 static int page_c;
+static char *websock_js_msg;
+static int websock_js_c;
 
 static SOCKET server_socket;
+static SOCKET regular_sockets[64];
 static SOCKET websockets_sockets[64];
 static int websockets_c = 0;
+static int regular_sockets_c = 0;
 
 static HINTERNET winhttp_state = NULL;
 static HINTERNET ggl_conn = NULL;
 
 static char const head_cmp[] = "<head>";
-static int const head_cmp_c = STR_SIZE(head_cmp);
 static char const end_head_cmp[] = "</head>";
-static int const end_head_cmp_c = STR_SIZE(end_head_cmp);
+
+enum {
+    end_head_cmp_size = STR_SIZE(end_head_cmp),
+    head_cmp_size = STR_SIZE(head_cmp),
+    page_header_size = STR_SIZE(page_header),
+    websock_js_header_size = STR_SIZE(websock_js_header),
+    not_modified_response_size = STR_SIZE(not_modified_response),
+    not_found_response_size = STR_SIZE(not_found_response),
+};
 
 enum {
     tag_stack_size = 256,
@@ -56,8 +75,12 @@ static char tmp[tmp_size];
 
 static char const req_obj_search[] = "/search";
 static char const req_obj_ws[] = "/ws";
-static int const req_obj_search_size = STR_SIZE(req_obj_search);
-static int const req_obj_ws_size = STR_SIZE(req_obj_ws);
+static char const req_obj_websock_js[] = "/websock.js";
+enum {
+    req_obj_search_size = STR_SIZE(req_obj_search),
+    req_obj_ws_size = STR_SIZE(req_obj_ws),
+    req_obj_websock_js_size = STR_SIZE(req_obj_websock_js),
+};
 
 Result send_complete_(char const *msg, int size, SOCKET sock, char *file, int line) {
     int off = 0;
@@ -72,7 +95,6 @@ Result send_complete_(char const *msg, int size, SOCKET sock, char *file, int li
     return OK;
 }
 
-
 static long long frequency_s, frequency_ms;
 
 void print_cur_time() {
@@ -85,23 +107,18 @@ void print_cur_time() {
     printf("%3d'%03d\n", s, ms);
 }
 
-Result send_main_page(SOCKET sock) {
-    return send_complete(page_msg, page_c, sock);
-}
+extern SOCKET main_socket;
 
-static void handle_server_socket(void) {
-    SOCKET conn_socket = accept(server_socket, NULL, NULL);
-    if (conn_socket == INVALID_SOCKET) {
-        printf("Accept failed with error code : %d", WSAGetLastError());
-        goto error;
-    }
+/// true if socket closed
+static bool handle_socket(int socket_i) {
+    printf("\nReceived request for %d! ", socket_i);
 
+    SOCKET conn_socket = regular_sockets[socket_i];
     int received = recv(conn_socket, (char*)client_request, 2047, 0);
     if(received < 0) {
         printf("Error receiving\n");
         goto error;
     }
-    printf("Received request! ");
     print_cur_time();
     //printf("Received %d bytes: \n`%.*s`\n", received, received, client_request);
     client_request[received] = '\0';
@@ -129,7 +146,7 @@ static void handle_server_socket(void) {
         && memcmp(req_obj_b, req_obj_search, req_obj_search_size) == 0
     ) {
         // Send browser response page
-        if(send_main_page(conn_socket).err) goto error;
+        if(send_complete(page_msg, page_c, conn_socket).err) goto error;
         printf("Sent main page ");
         print_cur_time();
 
@@ -139,9 +156,46 @@ static void handle_server_socket(void) {
             tmp, tmp + tmp_size,
             result, result + result_size
         );
+
+        return false;
+    }
+    else if(req_obj_size == req_obj_websock_js_size
+        && memcmp(req_obj_b, req_obj_websock_js, req_obj_size) == 0
+    ) {
+        static char const if_none_match_str[] = "If-None-Match: \"";
+        int if_none_match_str_size = STR_SIZE(if_none_match_str);
+
+        char const *key_b = strstr((char*)client_request, if_none_match_str);
+        if(key_b == NULL) goto resend;
+
+        key_b += if_none_match_str_size;
+        char const *key_e = key_b;
+        while(true) {
+            if(*key_e == '\0') goto resend;
+            if(*key_e == '"') break;
+            key_e++;
+        }
+
+        if(key_e - key_b != websock_js_key_size
+            || memcmp(key_b, WEBSOCK_JS_KEY, websock_js_key_size)
+        ) goto resend;
+
+        printf("Sent not modified ");
+        print_cur_time();
+        if(send_complete(
+            not_modified_response, not_modified_response_size, conn_socket
+        ).err) goto error;
+
+        return false;
+
+        resend:
+        printf("Resending websock.js ");
+        print_cur_time();
+        if(send_complete(websock_js_msg, websock_js_c, conn_socket).err) goto error;
+        return false;
     }
     else if(req_obj_size == req_obj_ws_size
-        && memcmp(req_obj_b, req_obj_ws, req_obj_ws_size) == 0
+        && memcmp(req_obj_b, req_obj_ws, req_obj_size) == 0
     ) {
         static char const header_msg[]
             = "HTTP/1.1 101 Switching Protocols\r\n"
@@ -237,46 +291,78 @@ static void handle_server_socket(void) {
         printf("Sent result ");
         print_cur_time();
 
-        return;
+        return false;
     }
     else {
-        printf("Not sending anything ");
+        send_complete(not_found_response, not_modified_response_size, conn_socket);
+        printf("Sending not found for %.*s ", req_obj_size, req_obj_b);
         print_cur_time();
+        goto error;
     }
 
 error:
-    printf("Connection closed\n");
     closesocket(conn_socket);
+    printf("Connection closed ");
+    print_cur_time();
+    return true;
 }
 
-static int setup_page(void) {
-    FILE *file = fopen("src/answers.html", "rb");
+typedef struct {
+    char *ptr;
+    int size;
+} File;
+
+static File setup_file(char const *fp, char const *header, int header_size) {
+    FILE *file = fopen(fp, "rb");
     if(file == NULL) {
-        printf("Error opening page file\n");
-        return 1;
+        printf("Error opening file\n");
+        return (File){0};
     }
 
     fseek(file, 0, SEEK_END);
     int const file_size = ftell(file);
     fseek(file, 0, SEEK_SET);
 
-    page_c = page_header_c + file_size;
-    page_msg = malloc(page_c);
-    if(!page_msg) {
-        printf("RAM?");
-        return 1;
+    int available = header_size + file_size + 11 + 4; // content len + \r\\n\r\n
+    char *msg = malloc(available);
+    if(!msg) {
+        printf("RAM? %d\n", available);
+        return (File){0};
     }
 
-    memcpy(page_msg, page_header_msg, page_header_c);
-    int read = fread(page_msg + page_header_c, sizeof(char), file_size, file);
+    memcpy(msg, header, header_size);
+    int cont_len_c = sprintf(msg + header_size, "%d\r\n\r\n", file_size);
+    int read = fread(
+        msg + header_size + cont_len_c,
+        sizeof(char), file_size, file
+    );
     if(read != file_size || read == 0) {
-        printf("PAGE? %d %d", read, file_size);
-        return 1;
+        printf("Could not read file: %d %d", read, file_size);
+        return (File){0};
     }
-    printf("Read %d bytes\n", read);
     fclose(file);
 
-    return 0;
+    printf("Read %d bytes\n", read);
+
+    return (File){ msg, header_size + cont_len_c + read };
+}
+
+static Result setup_page() {
+    printf("Setting up answers page: ");
+    File f = setup_file("src/answers.html", page_header, page_header_size);
+    if(!f.ptr) return ERR;
+    page_msg = f.ptr;
+    page_c = f.size;
+    return OK;
+}
+
+static Result setup_websock(void) {
+    printf("Setting up websockets.js: ");
+    File f = setup_file("src/websock.js", websock_js_header, websock_js_header_size);
+    if(!f.ptr) return ERR;
+    websock_js_msg = f.ptr;
+    websock_js_c = f.size;
+    return OK;
 }
 
 int main(int argc, char **argv) {
@@ -330,10 +416,8 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    if(setup_page()) {
-        printf("No page!\n");
-        return 1;
-    }
+    if(setup_page().err) return 1;
+    if(setup_websock().err) return 1;
 
     listen(server_socket, 60);
 
@@ -341,17 +425,22 @@ int main(int argc, char **argv) {
     fd_set error_fs;
 
     while(true) {
-        printf("\nWaiting for incoming connections... ");
+        printf("\n\nWaiting for incoming connections... ");
         print_cur_time();
 
         FD_ZERO(&read_fs);
         FD_ZERO(&error_fs);
         FD_SET(server_socket, &read_fs);
         FD_SET(server_socket, &error_fs);
+        for(int i = 0; i < regular_sockets_c; i++) {
+            SOCKET s = regular_sockets[i];
+            FD_SET(s, &read_fs);
+            FD_SET(s, &error_fs);
+        }
         for(int i = 0; i < websockets_c; i++) {
-            SOCKET *s = &websockets_sockets[i];
-            FD_SET(*s, &read_fs);
-            FD_SET(*s, &error_fs);
+            SOCKET s = websockets_sockets[i];
+            FD_SET(s, &read_fs);
+            FD_SET(s, &error_fs);
         }
 
         int ready_c = select(0, &read_fs, NULL, &error_fs, NULL);
@@ -368,8 +457,15 @@ int main(int argc, char **argv) {
             return 1;
         }
 
-        if(FD_ISSET(server_socket, &read_fs)) {
-            handle_server_socket();
+        for(int i = regular_sockets_c-1; i != -1; i--) {
+            if(!FD_ISSET(regular_sockets[i], &read_fs)) continue;
+
+            if(handle_socket(i)) {
+                regular_sockets_c--;
+                if(regular_sockets_c > i) {
+                    regular_sockets[i] = regular_sockets[regular_sockets_c];
+                }
+            }
         }
 
         // is this quadratic bc of FD_ISSET?
@@ -377,42 +473,42 @@ int main(int argc, char **argv) {
             SOCKET s = websockets_sockets[i];
             if(!FD_ISSET(s, &read_fs)) continue;
 
-            printf("Websocket received something!\n");
+            printf("\nWebsocket received something!\n");
 
             int received = recv(s, client_request, 2047, 0);
             if(received < 0) {
                 printf("Error receiving\n");
-                return 32;
+                goto error;
             }
 
             if(received < 1 || client_request[0] != 0x88) {
                 // 8 for no continuation, 8 for close
                 printf("first byte %x is not expected\n", client_request[0]);
-                return 52;
+                goto error;
             }
             if(received < 2 || (client_request[1] & 0x80) == 0) {
                 printf("Message not masked\n");
-                return 52;
+                goto error;
             }
             int len = client_request[1] & 0x7fu;
             if(len > 125) {
                 printf("Unsupported length %d\n", len);
-                return 52;
+                goto error;
             }
             if(received < 6) {
                 printf("Mask where\n");
-                return 52;
+                goto error;
             }
 #define M(index) client_request[index]
             uint8_t mask[4] = { M(2), M(3), M(4), M(5) };
 #undef M
             if(received < 6 + len) {
                 printf("Message len is smaller than currently available\n");
-                return 52;
+                goto error;
             }
             if(received > 2048) {
                 printf("Message too big\n");
-                return 52;
+                goto error;
             }
             uint8_t *client_msg = client_request + 6;
             uint8_t *response = (uint8_t*)tmp;
@@ -438,10 +534,33 @@ int main(int argc, char **argv) {
                 printf("Sent closing websocket response\n");
             }
 
+            error:
             closesocket(s);
             websockets_c--;
             if(websockets_c > i) {
                 websockets_sockets[i] = websockets_sockets[websockets_c];
+            }
+        }
+
+
+        if(FD_ISSET(server_socket, &read_fs)) {
+            printf("\nReceived new connection ");
+            print_cur_time();
+
+            SOCKET conn_socket = accept(server_socket, NULL, NULL);
+            if (conn_socket == INVALID_SOCKET) {
+                printf("Accept failed with error code : %d", WSAGetLastError());
+                closesocket(conn_socket);
+            }
+            else {
+                int socket_i = regular_sockets_c;
+                regular_sockets[regular_sockets_c++] = conn_socket;
+                if(handle_socket(socket_i)) {
+                    regular_sockets_c--;
+                }
+                else {
+                main_socket = regular_sockets[socket_i];
+                }
             }
         }
     }
