@@ -16,19 +16,19 @@
 #pragma comment(lib, "winhttp.lib")
 #pragma comment(lib, "ws2_32.lib")
 
-#define WEBSOCK_JS_KEY "b"
-enum { websock_js_key_size = STR_SIZE(WEBSOCK_JS_KEY), };
+//#define SW_KEY "a"
+//enum { sw_key_size = STR_SIZE(SW_KEY), };
 
-STRING(page_header,
+STRING(header_sw_page,
     "HTTP/1.1 200 .\r\n"
     "content-type: text/html\r\n"
     "content-length: "
 );
-STRING(websock_js_header,
+STRING(header_sw_js,
     "HTTP/1.1 200 .\r\n"
-    "content-type: text/html\r\n"
-    "cache-control: must-revalidate\r\n"
-    "etag: \"" WEBSOCK_JS_KEY "\"\r\n"
+    "content-type: application/javascript\r\n"
+    //"cache-control: must-revalidate\r\n"
+    //"etag: \"" SW_KEY "\"\r\n"
     "content-length: "
 );
 STRING(not_modified_response,
@@ -44,14 +44,14 @@ STRING(req_obj_search,
 STRING(req_obj_ws,
     "/ws"
 );
-STRING(req_obj_websock_js,
-    "/websock.js"
+STRING(req_obj_sw_js,
+    "/sw.js"
 );
 
-static char *page_msg;
-static int page_c;
-static char *websock_js_msg;
-static int websock_js_c;
+static char *msg_sw_page;
+static int msg_sw_page_size;
+static char *msg_sw_js;
+static int msg_sw_js_size;
 
 static SOCKET server_socket;
 static SOCKET regular_sockets[64];
@@ -99,9 +99,10 @@ void print_cur_time() {
 
 extern SOCKET main_socket;
 
-/// true if socket closed
+/// true if remove socket from regular (closed/moved)
 static bool handle_socket(int socket_i) {
-    printf("\nReceived request for %d! ", socket_i);
+    printf("\nReceived request for regular socket #%d! ", socket_i);
+    print_cur_time();
 
     SOCKET conn_socket = regular_sockets[socket_i];
     int received = recv(conn_socket, (char*)client_request, 2047, 0);
@@ -109,7 +110,10 @@ static bool handle_socket(int socket_i) {
         printf("Error receiving\n");
         goto error;
     }
-    print_cur_time();
+    else if(received == 0) {
+        printf("Connection gracefully closed\n");
+        return true;
+    }
     //printf("Received %d bytes: \n`%.*s`\n", received, received, client_request);
     client_request[received] = '\0';
 
@@ -120,7 +124,7 @@ static bool handle_socket(int socket_i) {
             break;
         }
         if(*req_obj_b == '\0') {
-            printf("Truncated request w/o object\n");
+            printf("Truncated request w/o object:\n`%.*s`", received, client_request);
             goto error;
         }
         req_obj_b++;
@@ -136,22 +140,25 @@ static bool handle_socket(int socket_i) {
         && memcmp(req_obj_b, req_obj_search, req_obj_search_size) == 0
     ) {
         // Send browser response page
-        if(send_complete(page_msg, page_c, conn_socket).err) goto error;
+        if(send_complete(msg_sw_page, msg_sw_page_size, conn_socket).err) goto error;
         printf("Sent main page ");
         print_cur_time();
 
+#if 0
         result_c = extract(
             conn_socket, ggl_conn,
             req_obj_b + req_obj_search_size + 1, req_obj_e,
             tmp, tmp + tmp_size,
             result, result + result_size
         );
+#endif
 
         return false;
     }
-    else if(req_obj_size == req_obj_websock_js_size
-        && memcmp(req_obj_b, req_obj_websock_js, req_obj_size) == 0
+    else if(req_obj_size == req_obj_sw_js_size
+        && memcmp(req_obj_b, req_obj_sw_js, req_obj_size) == 0
     ) {
+#if 0
         STRING(if_none_match_str, "If-None-Match: \"");
 
         char const *key_b = strstr((char*)client_request, if_none_match_str);
@@ -165,8 +172,8 @@ static bool handle_socket(int socket_i) {
             key_e++;
         }
 
-        if(key_e - key_b != websock_js_key_size
-            || memcmp(key_b, WEBSOCK_JS_KEY, websock_js_key_size)
+        if(key_e - key_b != sw_key_size
+            || memcmp(key_b, SW_KEY, sw_key_size)
         ) goto resend;
 
         printf("Sent not modified ");
@@ -176,11 +183,12 @@ static bool handle_socket(int socket_i) {
         ).err) goto error;
 
         return false;
+#endif
 
         resend:
-        printf("Resending websock.js ");
+        printf("Resending sw.js ");
         print_cur_time();
-        if(send_complete(websock_js_msg, websock_js_c, conn_socket).err) goto error;
+        if(send_complete(msg_sw_js, msg_sw_js_size, conn_socket).err) goto error;
         return false;
     }
     else if(req_obj_size == req_obj_ws_size
@@ -258,6 +266,7 @@ static bool handle_socket(int socket_i) {
         uint8_t *websock_response = (uint8_t*)accept + 4;
         websock_response[0] = (uint8_t)((1u << 7) | 2);
         int websock_response_size;
+#if 0
         if(result_c == -1) {
             websock_response[1] = 1;
             websock_response[2] = 5;
@@ -271,6 +280,8 @@ static bool handle_socket(int socket_i) {
             memcpy(websock_response + 4, result, result_c);
             websock_response_size = 4 + result_c;
         }
+#endif
+        websock_response_size = 0;
 
         char *msg = response;
         int msg_c = websock_response + websock_response_size - (uint8_t*)response;
@@ -279,7 +290,7 @@ static bool handle_socket(int socket_i) {
         printf("Sent result ");
         print_cur_time();
 
-        return false;
+        return true;
     }
     else {
         send_complete(not_found_response, not_modified_response_size, conn_socket);
@@ -335,21 +346,21 @@ static File setup_file(char const *fp, char const *header, int header_size) {
     return (File){ msg, header_size + cont_len_c + read };
 }
 
-static Result setup_page() {
-    printf("Setting up answers page: ");
-    File f = setup_file("src/answers.html", page_header, page_header_size);
+static Result setup_sw_page() {
+    printf("Setting up sw page: "); // startup page
+    File f = setup_file("src/sw.html", header_sw_page, header_sw_page_size);
     if(!f.ptr) return ERR;
-    page_msg = f.ptr;
-    page_c = f.size;
+    msg_sw_page = f.ptr;
+    msg_sw_page_size = f.size;
     return OK;
 }
 
-static Result setup_websock(void) {
-    printf("Setting up websockets.js: ");
-    File f = setup_file("src/websock.js", websock_js_header, websock_js_header_size);
+static Result setup_sw_js(void) {
+    printf("Setting up sw.js: ");
+    File f = setup_file("src/sw.js", header_sw_js, header_sw_js_size);
     if(!f.ptr) return ERR;
-    websock_js_msg = f.ptr;
-    websock_js_c = f.size;
+    msg_sw_js = f.ptr;
+    msg_sw_js_size = f.size;
     return OK;
 }
 
@@ -367,6 +378,7 @@ int main(int argc, char **argv) {
         return 1;
     }
 
+#if 0
     winhttp_state = WinHttpOpen(
         L"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
         WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
@@ -384,6 +396,7 @@ int main(int argc, char **argv) {
         printf("Failed to connect to google: %lu\n", GetLastError());
         return 1;
     }
+#endif
 
     printf("Initialised.\n");
 
@@ -404,8 +417,8 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    if(setup_page().err) return 1;
-    if(setup_websock().err) return 1;
+    if(setup_sw_page().err) return 1;
+    if(setup_sw_js().err) return 1;
 
     listen(server_socket, 60);
 
@@ -461,19 +474,30 @@ int main(int argc, char **argv) {
             SOCKET s = websockets_sockets[i];
             if(!FD_ISSET(s, &read_fs)) continue;
 
-            printf("\nWebsocket received something!\n");
+            printf("\nWebsocket #%d received something!\n", i);
 
             int received = recv(s, client_request, 2047, 0);
             if(received < 0) {
-                printf("Error receiving\n");
+                printf("Error receiving %d\n", WSAGetLastError());
+                goto error;
+            }
+            else if(received == 0) {
+                printf("Connection gracefully closed\n");
                 goto error;
             }
 
-            if(received < 1 || client_request[0] != 0x88) {
-                // 8 for no continuation, 8 for close
-                printf("first byte %x is not expected\n", client_request[0]);
+            // 8 - no continuation, 1 - text, 2 - bin, 8 - close
+            if((client_request[0] & 0xf0) != 0x80) {
+                printf("Continuation not supproted for %x\n", client_request[0]);
                 goto error;
             }
+
+            int type = client_request[0] & 0xf;
+            if(type != 1 && type != 2 && type != 8) {
+                printf("Unsupproted opcode for %x\n", client_request[0]);
+                goto error;
+            }
+
             if(received < 2 || (client_request[1] & 0x80) == 0) {
                 printf("Message not masked\n");
                 goto error;
@@ -499,34 +523,65 @@ int main(int argc, char **argv) {
                 goto error;
             }
             uint8_t *client_msg = client_request + 6;
-            uint8_t *response = (uint8_t*)tmp;
-            uint8_t *decoded_msg = response + 2;
+            uint8_t *decoded_msg = (uint8_t*)tmp;
+            uint8_t *response = (uint8_t*)tmp + len;
             for(int i = 0; i < len; i++) {
                 decoded_msg[i] = client_msg[i] ^ mask[i % 4];
             }
 
-            printf("Message: %.*s\n", len, decoded_msg);
-
-            printf("Request: `");
+            printf("Request: \n`");
             for(int i = 0; i != received; i++) {
                 printf("%c", client_request[i]);
             }
             printf("`\n");
+            printf("Message: \n`%.*s`\n", len, decoded_msg);
 
-            response[0] = (uint8_t)((1 << 7) | 8);
-            response[1] = len;
-            if(send_complete((char*)response, 2 + len, s).err) {
-                printf("Error while sending websocket close\n");
+            if(type == 1) { // text
+                response[0] = (uint8_t)((1 << 7) | 1);
+                response[1] = 2;
+                response[2] = 'O';
+                response[3] = 'K';
+                if(send_complete((char*)response, 4, s).err) {
+                    printf("Error while sending text response\n");
+                    goto error;
+                }
+                printf("Sent text response\n");
             }
-            else {
-                printf("Sent closing websocket response\n");
-            }
+            else if(type == 2) { // bin
+                int req_type = decoded_msg[0];
+                if(req_type != 1) {
+                    printf("Unexpected request type %d\n", req_type);
+                }
+                response[0] = (uint8_t)((1 << 7) | 2);
+                response[1] = 2 + len-1;
+                response[2] = 1;
+                response[3] = len;
+                memcpy(response + 4, decoded_msg + 1, len-1);
 
-            error:
-            closesocket(s);
-            websockets_c--;
-            if(websockets_c > i) {
-                websockets_sockets[i] = websockets_sockets[websockets_c];
+                if(send_complete((char*)response, 4 + len-1, s).err) {
+                    printf("Error while sending websocket response\n");
+                    goto error;
+                }
+
+                printf("Sent websocket response\n");
+            }
+            else if(type == 8) { // close
+                response[0] = (uint8_t)((1 << 7) | 8);
+                response[1] = len;
+                memcpy(response + 2, decoded_msg, len);
+                if(send_complete((char*)response, 2 + len, s).err) {
+                    printf("Error while sending websocket close\n");
+                    goto error;
+                }
+
+                printf("Sent websocket close\n");
+
+                error:
+                closesocket(s);
+                websockets_c--;
+                if(websockets_c > i) {
+                    websockets_sockets[i] = websockets_sockets[websockets_c];
+                }
             }
         }
 
