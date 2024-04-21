@@ -215,14 +215,10 @@ uint32_t extract(
     uint8_t *decode_end = recv_end;
     uint8_t *result_end = result_b;
 
-    static char const match_str[] = "<div jscontroller=\"SC7lYd\"";
-    int match_size = STR_SIZE(match_str);
-
-    static char const href_str[] = "href=\"";
-    int href_size = STR_SIZE(href_str);
-
-    static char const desc_outer_str[] = "data-sncf=\""; // look further
-    int desc_outer_str_size = STR_SIZE(desc_outer_str);
+    // see SearXGN
+    STRING(match_str, "<div jscontroller=\"SC7lYd\"");
+    STRING(href_str, "href=\"");
+    STRING(desc_outer_str, "data-sncf=\""); // look further into this
 
     int tag_end = 0;
     enum {
@@ -274,10 +270,10 @@ uint32_t extract(
         switch(decode_state) {
             break; case SEARCH_NEXT: {
                 while(true) {
-                    if(recv_end - decode_end < match_size) goto end;
-                    int diff = get_diff(decode_end, match_str, match_size);
+                    if(recv_end - decode_end < match_str_size) goto end;
+                    int diff = get_diff(decode_end, match_str, match_str_size);
                     decode_end += MAX(diff, 1);
-                    if(diff == match_size) {
+                    if(diff == match_str_size) {
                         decode_state = FIND_SEACH_END;
                         TREE_PRINTF("Found\n");
                         goto next;
@@ -358,11 +354,11 @@ uint32_t extract(
                         if(recv_end - a_parse_end >= 1 && *a_parse_end == '>') {
                             goto not_a;
                         }
-                        if(recv_end - a_parse_end < href_size) goto end_parse;
+                        if(recv_end - a_parse_end < href_str_size) goto end_parse;
                         if(*a_parse_end == '>') goto not_a;
-                        int diff = get_diff(a_parse_end, href_str, href_size);
+                        int diff = get_diff(a_parse_end, href_str, href_str_size);
                         a_parse_end += MAX(diff, 1);
-                        if(diff == href_size) break;
+                        if(diff == href_str_size) break;
                     }
 
                     uint8_t *href_begin = a_parse_end;

@@ -19,23 +19,34 @@
 #define WEBSOCK_JS_KEY "b"
 enum { websock_js_key_size = STR_SIZE(WEBSOCK_JS_KEY), };
 
-static char const page_header[]
-    = "HTTP/1.1 200 .\r\n"
+STRING(page_header,
+    "HTTP/1.1 200 .\r\n"
     "content-type: text/html\r\n"
-    "content-length: ";
-static char const websock_js_header[]
-    = "HTTP/1.1 200 .\r\n"
+    "content-length: "
+);
+STRING(websock_js_header,
+    "HTTP/1.1 200 .\r\n"
     "content-type: text/html\r\n"
     "cache-control: must-revalidate\r\n"
     "etag: \"" WEBSOCK_JS_KEY "\"\r\n"
-    "content-length: ";
-static char const not_modified_response[]
-    = "HTTP/1.1 304 .\r\n\r\n";
-static char const not_found_response[]
-    = "HTTP/1.1 404 .\r\n\r\n";
+    "content-length: "
+);
+STRING(not_modified_response,
+    "HTTP/1.1 304 .\r\n\r\n"
+);
+STRING(not_found_response,
+    "HTTP/1.1 404 .\r\n\r\n"
+);
 
-static char const get[] = "GET";
-static char const search[] = "/search?q=";
+STRING(req_obj_search,
+    "/search"
+);
+STRING(req_obj_ws,
+    "/ws"
+);
+STRING(req_obj_websock_js,
+    "/websock.js"
+);
 
 static char *page_msg;
 static int page_c;
@@ -51,18 +62,6 @@ static int regular_sockets_c = 0;
 static HINTERNET winhttp_state = NULL;
 static HINTERNET ggl_conn = NULL;
 
-static char const head_cmp[] = "<head>";
-static char const end_head_cmp[] = "</head>";
-
-enum {
-    end_head_cmp_size = STR_SIZE(end_head_cmp),
-    head_cmp_size = STR_SIZE(head_cmp),
-    page_header_size = STR_SIZE(page_header),
-    websock_js_header_size = STR_SIZE(websock_js_header),
-    not_modified_response_size = STR_SIZE(not_modified_response),
-    not_found_response_size = STR_SIZE(not_found_response),
-};
-
 enum {
     tag_stack_size = 256,
     result_size = 65536,
@@ -72,15 +71,6 @@ static uint8_t client_request[2048] = "";
 static uint32_t result_c;
 static char result[result_size];
 static char tmp[tmp_size];
-
-static char const req_obj_search[] = "/search";
-static char const req_obj_ws[] = "/ws";
-static char const req_obj_websock_js[] = "/websock.js";
-enum {
-    req_obj_search_size = STR_SIZE(req_obj_search),
-    req_obj_ws_size = STR_SIZE(req_obj_ws),
-    req_obj_websock_js_size = STR_SIZE(req_obj_websock_js),
-};
 
 Result send_complete_(char const *msg, int size, SOCKET sock, char *file, int line) {
     int off = 0;
@@ -162,8 +152,7 @@ static bool handle_socket(int socket_i) {
     else if(req_obj_size == req_obj_websock_js_size
         && memcmp(req_obj_b, req_obj_websock_js, req_obj_size) == 0
     ) {
-        static char const if_none_match_str[] = "If-None-Match: \"";
-        int if_none_match_str_size = STR_SIZE(if_none_match_str);
+        STRING(if_none_match_str, "If-None-Match: \"");
 
         char const *key_b = strstr((char*)client_request, if_none_match_str);
         if(key_b == NULL) goto resend;
@@ -197,16 +186,15 @@ static bool handle_socket(int socket_i) {
     else if(req_obj_size == req_obj_ws_size
         && memcmp(req_obj_b, req_obj_ws, req_obj_size) == 0
     ) {
-        static char const header_msg[]
-            = "HTTP/1.1 101 Switching Protocols\r\n"
+        STRING(header_msg,
+            "HTTP/1.1 101 Switching Protocols\r\n"
             "Connection: Upgrade\r\nUpgrade: websocket\r\n"
-            "Sec-WebSocket-Accept: ";
-        int const header_msg_c = STR_SIZE(header_msg);
+            "Sec-WebSocket-Accept: "
+        );
 
         static char const b64lookup[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
-        static char const key_header_name[] = "Sec-WebSocket-Key";
-        int const key_header_c = STR_SIZE(key_header_name);
+        STRING(key_header_name, "Sec-WebSocket-Key");
 
         char const *pos = strstr((char*)client_request, key_header_name);
         if(pos == NULL) {
@@ -219,16 +207,16 @@ static bool handle_socket(int socket_i) {
         int const key2_len = STR_SIZE(key2);
         int key1_len = 60 - key2_len;
 
-        if(pos - (char*)client_request + key_header_c + 2 + key1_len > received) {
+        if(pos - (char*)client_request + key_header_name_size + 2 + key1_len > received) {
             printf("Incorrect size\n");
             goto error;
         }
-        if(memcmp(pos + key_header_c, ": ", 2)) {
+        if(memcmp(pos + key_header_name_size, ": ", 2)) {
             printf("incorrect ': '");
             goto error;
         }
         // skip '<name>: '
-        pos += key_header_c + 2;
+        pos += key_header_name_size + 2;
 
         uint8_t *digest = (uint8_t*)tmp;
         uint8_t *key = digest;
@@ -243,7 +231,7 @@ static bool handle_socket(int socket_i) {
         SHA1Update(&ctx, key, 60);
         SHA1Final(digest, &ctx);
 
-        char *accept = response + header_msg_c;
+        char *accept = response + header_msg_size;
 
         // y big endian...
 #define D(i, o) ((uint32_t)digest[(i) * 3 + (o)] << (24 - (o) * 8))
@@ -264,7 +252,7 @@ static bool handle_socket(int socket_i) {
             *accept++ = '=';
         }
 
-        memcpy(response, header_msg, header_msg_c);
+        memcpy(response, header_msg, header_msg_size);
         memcpy(accept, "\r\n\r\n", 4);
 
         uint8_t *websock_response = (uint8_t*)accept + 4;

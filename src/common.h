@@ -14,6 +14,8 @@ typedef unsigned short wchar;
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
 #define MAX(a, b) ((a) > (b) ? (a) : (b))
 
+#define STRING(name, str) static char const name[] = str; enum { name ##_size = STR_SIZE(name) };
+
 typedef struct { bool err; } Result;
 #define OK ((Result){ false })
 #define ERR ((Result){ true })
